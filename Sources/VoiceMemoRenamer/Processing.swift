@@ -169,7 +169,10 @@ struct MacWhisperService {
         let output = stdoutBuffer.string()
         let errorOutput = stderrBuffer.string()
         guard terminationStatus == 0 else {
-            throw ProcessingFailure(message: "MacWhisper failed.", details: errorOutput.isEmpty ? output : errorOutput)
+            let details = errorOutput.isEmpty
+                ? (output.isEmpty ? "MacWhisper exited with status \(terminationStatus) without error output." : output)
+                : errorOutput
+            throw ProcessingFailure(message: "MacWhisper failed.", details: details)
         }
         return output
     }
@@ -443,7 +446,7 @@ struct LMStudioService {
         let requestURL = nativeBaseURL.appendingPathComponent("models")
         var request = URLRequest(url: requestURL)
         request.timeoutInterval = 10
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await data(for: request)
         try validate(response: response, data: data, fallbackMessage: "LM Studio model metadata request failed.")
         let decoded = try JSONDecoder().decode(LMStudioNativeModelsResponse.self, from: data)
         let loadedModels = decoded.models.filter { !$0.loadedInstances.isEmpty }
@@ -589,7 +592,7 @@ struct LMStudioService {
     private func get(path: String, timeout: TimeInterval) async throws -> Data {
         var request = URLRequest(url: baseURL.appendingPathComponent(path))
         request.timeoutInterval = timeout
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await data(for: request)
         try validate(response: response, data: data, fallbackMessage: "LM Studio request failed.")
         return data
     }
@@ -600,9 +603,40 @@ struct LMStudioService {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = body
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await data(for: request)
         try validate(response: response, data: data, fallbackMessage: "LM Studio analysis request failed.")
         return data
+    }
+
+    private func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        do {
+            return try await URLSession.shared.data(for: request)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError {
+            throw ProcessingFailure(
+                message: lmStudioConnectionMessage(for: error),
+                details: "\(request.url?.absoluteString ?? baseURL.absoluteString)\n\(error.localizedDescription)\n\nCheck that LM Studio is running, the server is started, and the selected model is loaded."
+            )
+        } catch {
+            throw ProcessingFailure(
+                message: "LM Studio request failed.",
+                details: "\(request.url?.absoluteString ?? baseURL.absoluteString)\n\(error.localizedDescription)"
+            )
+        }
+    }
+
+    private func lmStudioConnectionMessage(for error: URLError) -> String {
+        switch error.code {
+        case .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed:
+            return "Cannot reach LM Studio."
+        case .networkConnectionLost, .notConnectedToInternet:
+            return "Connection to LM Studio was interrupted."
+        case .timedOut:
+            return "LM Studio request timed out."
+        default:
+            return "LM Studio request failed."
+        }
     }
 
     private var nativeBaseURL: URL {
@@ -637,12 +671,12 @@ struct ObsidianJournalExporter {
     func export(_ item: ImportItem) throws -> ImportItem {
         let policy = settings.policy(for: item.workflow)
         let vaultRoot = URL(fileURLWithPath: settings.vaultRootPath)
-        let sourceAudioURL = try audioSourceURL(for: item)
         let generatedFilename = FilenamePattern.render(pattern: policy.filenamePattern, item: item, workflowName: policy.name)
         var updated = item
         var exportedAudioURL: URL?
 
         if policy.audioFileBehavior == .copyToFolder || policy.audioFileBehavior == .moveToFolder {
+            let sourceAudioURL = try audioSourceURL(for: item, behavior: policy.audioFileBehavior)
             let audioDirectory = audioDestinationDirectory(for: policy, vaultRoot: vaultRoot, item: item)
             try FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
             let destinationAudioURL = uniqueURL(in: audioDirectory, filename: generatedFilename)
@@ -665,7 +699,7 @@ struct ObsidianJournalExporter {
         }
 
         if policy.audioFileBehavior == .renameInPlace {
-            let originalURL = sourceAudioURL
+            let originalURL = try audioSourceURL(for: updated, behavior: policy.audioFileBehavior)
             let destinationURL = uniqueURL(in: originalURL.deletingLastPathComponent(), filename: generatedFilename)
             try FileManager.default.moveItem(at: originalURL, to: destinationURL)
             updated.originalPath = destinationURL.path
@@ -703,18 +737,29 @@ struct ObsidianJournalExporter {
         return updated
     }
 
-    private func audioSourceURL(for item: ImportItem) throws -> URL {
+    private func audioSourceURL(for item: ImportItem, behavior: AudioFileBehavior) throws -> URL {
         let originalURL = URL(fileURLWithPath: item.originalPath)
+        let managedURL = item.managedAudioPath.map { URL(fileURLWithPath: $0) }
+
+        if behavior == .renameInPlace {
+            if FileManager.default.fileExists(atPath: originalURL.path) {
+                return originalURL
+            }
+            throw ProcessingFailure(
+                message: "Original audio cannot be renamed in place.",
+                details: "The original file is no longer at its original path. Choose a copy or move workflow, or put the file back and try again.\n\nOriginal: \(item.originalPath)\nProcessing copy: \(item.managedAudioPath ?? "None")"
+            )
+        }
+
+        if let managedURL, FileManager.default.fileExists(atPath: managedURL.path) {
+            return managedURL
+        }
         if FileManager.default.fileExists(atPath: originalURL.path) {
             return originalURL
         }
-        if let managedAudioPath = item.managedAudioPath,
-           FileManager.default.fileExists(atPath: managedAudioPath) {
-            return URL(fileURLWithPath: managedAudioPath)
-        }
         throw ProcessingFailure(
             message: "Source audio is not available.",
-            details: "Original: \(item.originalPath)\nLegacy processing copy: \(item.managedAudioPath ?? "None")"
+            details: "Original: \(item.originalPath)\nProcessing copy: \(item.managedAudioPath ?? "None")"
         )
     }
 
@@ -952,17 +997,21 @@ final class ImportProcessor {
     }
 
     private func audioSourceURL(for item: ImportItem) throws -> URL {
-        let originalURL = URL(fileURLWithPath: item.originalPath)
-        if FileManager.default.fileExists(atPath: originalURL.path) {
-            return originalURL
-        }
         if let managedAudioPath = item.managedAudioPath,
            FileManager.default.fileExists(atPath: managedAudioPath) {
             return URL(fileURLWithPath: managedAudioPath)
         }
+        let candidates = [item.originalPath, item.sourcePath].compactMap { $0 }
+        for path in candidates {
+            let url = URL(fileURLWithPath: path)
+            if FileManager.default.fileExists(atPath: url.path) {
+                try AudioFileAccess.validateReadableAudio(at: url)
+                return url
+            }
+        }
         throw ProcessingFailure(
             message: "Source audio is not available.",
-            details: "Original: \(item.originalPath)\nLegacy processing copy: \(item.managedAudioPath ?? "None")"
+            details: "Original: \(item.originalPath)\nProcessing copy: \(item.managedAudioPath ?? "None")"
         )
     }
 
@@ -989,7 +1038,7 @@ final class ImportProcessor {
             let exporter = ObsidianJournalExporter(settings: store.settings) { [store] checkpoint in
                 store.update(checkpoint)
             }
-            let exported = try exporter.export(item)
+            let exported = applyProcessingStoragePolicy(to: try exporter.export(item))
             store.update(exported)
         } catch {
             var failed = store.item(id: id) ?? item
@@ -1001,6 +1050,25 @@ final class ImportProcessor {
             )
             store.update(failed)
         }
+    }
+
+    private func applyProcessingStoragePolicy(to item: ImportItem) -> ImportItem {
+        let policy = store.workflowPolicy(for: item.workflow)
+        guard policy.processingStoragePolicy == .deleteAfterSuccessfulExport,
+              let managedAudioPath = item.managedAudioPath else {
+            return item
+        }
+
+        try? FileManager.default.removeItem(at: URL(fileURLWithPath: managedAudioPath))
+        var updated = item
+        updated.managedAudioPath = nil
+        updated.fileOperations.append(FileOperationRecord(
+            kind: "delete_managed_processing_copy",
+            sourcePath: managedAudioPath,
+            destinationPath: "",
+            occurredAt: Date()
+        ))
+        return updated
     }
 
     private func shouldAutoExport(_ item: ImportItem) -> Bool {
@@ -1058,9 +1126,12 @@ final class ImportProcessor {
     }
 }
 
-struct ProcessingFailure: Error {
+struct ProcessingFailure: LocalizedError {
     var message: String
     var details: String
+
+    var errorDescription: String? { message }
+    var failureReason: String? { details }
 }
 
 private struct ModelsResponse: Decodable {

@@ -109,6 +109,8 @@ struct SettingsView: View {
             Button("Clear Cache") {
                 store.clearCache()
             }
+            .disabled(store.hasActiveProcessing)
+            .help(store.hasActiveProcessing ? "Wait until active processing finishes before clearing the cache." : "Remove app-managed temporary copies that are no longer needed.")
         }
     }
 

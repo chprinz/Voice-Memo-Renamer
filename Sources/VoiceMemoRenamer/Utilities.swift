@@ -121,6 +121,114 @@ enum FileNaming {
     }
 }
 
+enum AudioFileAccess {
+    static let supportedAudioExtensions = Set(["m4a", "mp3", "wav", "aiff", "aif", "caf", "mp4", "mov"])
+
+    static func isSupportedAudioURL(_ url: URL) -> Bool {
+        supportedAudioExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    static func createManagedCopy(from sourceURL: URL) throws -> URL {
+        try validateReadableAudio(at: sourceURL)
+        try FileManager.default.createDirectory(at: AppPaths.managedAudioDirectory, withIntermediateDirectories: true)
+
+        let destinationURL = FileNaming.uniqueURL(
+            in: AppPaths.managedAudioDirectory,
+            filename: FileNaming.filename(
+                preferredName: sourceURL.lastPathComponent,
+                fallbackBase: sourceURL.deletingPathExtension().lastPathComponent,
+                fallbackExtension: sourceURL.pathExtension.isEmpty ? "m4a" : sourceURL.pathExtension
+            )
+        )
+
+        let sourceSize = try fileSize(for: sourceURL)
+        do {
+            try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+            let copiedSize = try fileSize(for: destinationURL)
+            guard copiedSize == sourceSize else {
+                try? FileManager.default.removeItem(at: destinationURL)
+                throw ProcessingFailure(
+                    message: "Audio file changed while importing.",
+                    details: "The source file size changed while the app was making a local processing copy. Wait until iCloud or the recording app finishes writing the file, then try again.\n\nSource: \(sourceURL.path)"
+                )
+            }
+            return destinationURL
+        } catch let failure as ProcessingFailure {
+            throw failure
+        } catch {
+            try? FileManager.default.removeItem(at: destinationURL)
+            throw ProcessingFailure(
+                message: "Could not copy audio into the app cache.",
+                details: "\(sourceURL.path)\n\(error.localizedDescription)"
+            )
+        }
+    }
+
+    static func validateReadableAudio(at url: URL) throws {
+        guard url.isFileURL else {
+            throw ProcessingFailure(message: "Only local files can be imported.", details: url.absoluteString)
+        }
+        guard isSupportedAudioURL(url) else {
+            throw ProcessingFailure(
+                message: "Unsupported audio file type.",
+                details: "\(url.lastPathComponent)\nSupported: \(supportedAudioExtensions.sorted().joined(separator: ", "))"
+            )
+        }
+
+        let keys: Set<URLResourceKey> = [
+            .isRegularFileKey,
+            .fileSizeKey,
+            .isUbiquitousItemKey,
+            .ubiquitousItemDownloadingStatusKey
+        ]
+        let values: URLResourceValues
+        do {
+            values = try url.resourceValues(forKeys: keys)
+        } catch {
+            throw ProcessingFailure(
+                message: "Audio file is not available.",
+                details: "\(url.path)\n\(error.localizedDescription)"
+            )
+        }
+
+        guard values.isRegularFile == true else {
+            throw ProcessingFailure(message: "Audio source is not a file.", details: url.path)
+        }
+
+        if values.isUbiquitousItem == true,
+           values.ubiquitousItemDownloadingStatus == .notDownloaded {
+            try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+            throw ProcessingFailure(
+                message: "Audio is still downloading from iCloud.",
+                details: "macOS has been asked to download the file. Wait until it is available locally, then try again.\n\nSource: \(url.path)"
+            )
+        }
+
+        let size = values.fileSize ?? 0
+        guard size > 0 else {
+            throw ProcessingFailure(
+                message: "Audio file is empty.",
+                details: "The file has zero bytes. It may still be syncing or it may be damaged.\n\nSource: \(url.path)"
+            )
+        }
+
+        guard FileManager.default.isReadableFile(atPath: url.path) else {
+            throw ProcessingFailure(
+                message: "Audio file is not readable.",
+                details: "The app does not have permission to read this file, or the file is not downloaded locally.\n\nSource: \(url.path)"
+            )
+        }
+    }
+
+    private static func fileSize(for url: URL) throws -> Int {
+        let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+        guard values.isRegularFile == true else {
+            throw ProcessingFailure(message: "Audio source is not a file.", details: url.path)
+        }
+        return values.fileSize ?? 0
+    }
+}
+
 enum AudioInspector {
     static func recordingDate(for url: URL) -> (date: Date, certain: Bool) {
         let resourceKeys: Set<URLResourceKey> = [.creationDateKey, .contentModificationDateKey]

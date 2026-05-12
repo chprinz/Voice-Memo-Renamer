@@ -12,6 +12,8 @@ final class ImportStore: ObservableObject {
     }
 
     private var processingTasks: [ImportItem.ID: Task<Void, Never>] = [:]
+    private var watchFolderTask: Task<Void, Never>?
+    private var isScanningWatchFolders = false
 
     init() {
         ensureDirectories()
@@ -20,9 +22,7 @@ final class ImportStore: ObservableObject {
         recoverInterruptedItems()
         migrateLegacyWorkflowReferences()
         backfillAudioFingerprints()
-        if shouldScanWatchFoldersAtLaunch {
-            Task { await scanWatchFolders() }
-        }
+        startWatchFolderMonitoring()
     }
 
     func addItem(from sourceURL: URL) async -> ImportItem? {
@@ -33,26 +33,57 @@ final class ImportStore: ObservableObject {
                 sourceURL.stopAccessingSecurityScopedResource()
             }
         }
-        let fingerprint = try? AudioFingerprint.sha256(for: sourceURL)
-        if isKnownImport(sourceURL: sourceURL, fingerprint: fingerprint) {
+        guard AudioFileAccess.isSupportedAudioURL(sourceURL) else { return nil }
+        if isKnownImport(sourceURL: sourceURL, fingerprint: nil) {
             return nil
         }
-        let (recordingDate, certain) = AudioInspector.recordingDate(for: sourceURL)
-        let duration = await AudioInspector.duration(for: sourceURL)
 
-        let item = ImportItem(
+        var managedAudioURL: URL?
+        var importError: ProcessingError?
+        do {
+            managedAudioURL = try AudioFileAccess.createManagedCopy(from: sourceURL)
+        } catch {
+            let failure = error as? ProcessingFailure
+            importError = ProcessingError(
+                message: failure?.message ?? "Could not prepare audio for import.",
+                technicalDetails: failure?.details ?? error.localizedDescription,
+                occurredAt: Date()
+            )
+        }
+
+        let metadataURL = managedAudioURL ?? sourceURL
+        let fingerprint = managedAudioURL.flatMap { try? AudioFingerprint.sha256(for: $0) }
+        if isKnownImport(sourceURL: sourceURL, fingerprint: fingerprint) {
+            if let managedAudioURL {
+                try? FileManager.default.removeItem(at: managedAudioURL)
+            }
+            return nil
+        }
+        let (recordingDate, certain) = AudioInspector.recordingDate(for: metadataURL)
+        let duration = await AudioInspector.duration(for: metadataURL)
+
+        var item = ImportItem(
             originalFilename: sourceURL.lastPathComponent,
             originalPath: sourceURL.path,
             sourceFilename: sourceURL.lastPathComponent,
             sourcePath: sourceURL.path,
             audioFingerprint: fingerprint,
-            managedAudioPath: nil,
+            managedAudioPath: managedAudioURL?.path,
             recordingDate: recordingDate,
             recordingDateIsCertain: certain,
             durationSeconds: duration,
             workflow: workflowForSource(sourceURL),
-            status: .queued
+            status: importError == nil ? .queued : .needsAttention
         )
+        if let managedAudioURL {
+            item.fileOperations.append(FileOperationRecord(
+                kind: "managed_processing_copy",
+                sourcePath: sourceURL.path,
+                destinationPath: managedAudioURL.path,
+                occurredAt: Date()
+            ))
+        }
+        item.error = importError
         items.insert(item, at: 0)
         return item
     }
@@ -127,6 +158,10 @@ final class ImportStore: ObservableObject {
     }
 
     func scanWatchFolders() async {
+        guard !isScanningWatchFolders else { return }
+        isScanningWatchFolders = true
+        defer { isScanningWatchFolders = false }
+
         let policies = settings.workflows.filter(\.usesWatchFolder)
         guard !policies.isEmpty else { return }
         for policy in policies {
@@ -142,15 +177,63 @@ final class ImportStore: ObservableObject {
             ) else { continue }
             let urls = enumerator.compactMap { $0 as? URL }
             for url in urls {
-                guard Self.supportedAudioExtensions.contains(url.pathExtension.lowercased()) else { continue }
+                guard AudioFileAccess.isSupportedAudioURL(url) else { continue }
+                if let existing = existingItem(forSourceURL: url) {
+                    if let prepared = await prepareUnavailableItem(existing, from: url, workflowID: policy.id) {
+                        ImportProcessor(store: self).process(prepared.id)
+                    }
+                    continue
+                }
                 if var imported = await addItem(from: url) {
                     imported.workflow = policy.id
-                    imported.status = .queued
                     update(imported)
-                    ImportProcessor(store: self).process(imported.id)
+                    if imported.status == .queued {
+                        ImportProcessor(store: self).process(imported.id)
+                    }
                 }
             }
         }
+    }
+
+    private func existingItem(forSourceURL sourceURL: URL) -> ImportItem? {
+        items.first { item in
+            item.originalPath == sourceURL.path || item.sourcePath == sourceURL.path
+        }
+    }
+
+    private func prepareUnavailableItem(_ item: ImportItem, from sourceURL: URL, workflowID: String) async -> ImportItem? {
+        guard item.status == .needsAttention, item.managedAudioPath == nil else { return nil }
+        let managedAudioURL: URL
+        do {
+            managedAudioURL = try AudioFileAccess.createManagedCopy(from: sourceURL)
+        } catch {
+            let failure = error as? ProcessingFailure
+            var updated = item
+            updated.workflow = workflowID
+            updated.error = ProcessingError(
+                message: failure?.message ?? "Could not prepare audio for import.",
+                technicalDetails: failure?.details ?? error.localizedDescription,
+                occurredAt: Date()
+            )
+            update(updated)
+            return nil
+        }
+
+        var updated = item
+        updated.workflow = workflowID
+        updated.managedAudioPath = managedAudioURL.path
+        updated.audioFingerprint = try? AudioFingerprint.sha256(for: managedAudioURL)
+        updated.durationSeconds = await AudioInspector.duration(for: managedAudioURL)
+        updated.status = .queued
+        updated.error = nil
+        updated.fileOperations.append(FileOperationRecord(
+            kind: "managed_processing_copy",
+            sourcePath: sourceURL.path,
+            destinationPath: managedAudioURL.path,
+            occurredAt: Date()
+        ))
+        update(updated)
+        return updated
     }
 
     private func isKnownImport(sourceURL: URL, fingerprint: String?) -> Bool {
@@ -200,14 +283,17 @@ final class ImportStore: ObservableObject {
     }
 
     func clearCompletedItems() {
-        items.removeAll { $0.status == .imported }
+        clearItems { $0.status == .imported }
     }
 
     func clearItems(where shouldClear: (ImportItem) -> Bool) {
-        let clearedIDs = items.filter(shouldClear).map(\.id)
-        for id in clearedIDs {
-            processingTasks[id]?.cancel()
-            processingTasks[id] = nil
+        let clearedItems = items.filter(shouldClear)
+        for item in clearedItems {
+            processingTasks[item.id]?.cancel()
+            processingTasks[item.id] = nil
+            if let managedAudioPath = item.managedAudioPath {
+                try? FileManager.default.removeItem(at: URL(fileURLWithPath: managedAudioPath))
+            }
         }
         items.removeAll(where: shouldClear)
     }
@@ -220,6 +306,19 @@ final class ImportStore: ObservableObject {
         settings.checkWatchFoldersAtLaunch || settings.workflows.contains(where: \.usesWatchFolder)
     }
 
+    private func startWatchFolderMonitoring() {
+        guard watchFolderTask == nil else { return }
+        watchFolderTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                if self.shouldScanWatchFoldersAtLaunch {
+                    await self.scanWatchFolders()
+                }
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
+            }
+        }
+    }
+
     func appStorageUsage() -> Int64 {
         directorySize(AppPaths.processingCacheDirectory)
             + directorySize(AppPaths.managedAudioDirectory)
@@ -228,10 +327,10 @@ final class ImportStore: ObservableObject {
 
     func clearCache() {
         removeContents(of: AppPaths.processingCacheDirectory)
-        removeContents(of: AppPaths.managedAudioDirectory)
         removeContents(of: AppPaths.dropImportDirectory)
         for item in items where item.status == .imported {
             guard let path = item.managedAudioPath else { continue }
+            try? FileManager.default.removeItem(at: URL(fileURLWithPath: path))
             var updated = item
             updated.managedAudioPath = nil
             updated.fileOperations.append(FileOperationRecord(
@@ -376,7 +475,6 @@ final class ImportStore: ObservableObject {
         }
     }
 
-    private static let supportedAudioExtensions = Set(["m4a", "mp3", "wav", "aiff", "aif", "caf", "mp4", "mov"])
     private static let activeStatuses: Set<ImportStatus> = [.queued, .transcribing, .transcribed, .analyzing, .importing]
 
     private func loadItems() {

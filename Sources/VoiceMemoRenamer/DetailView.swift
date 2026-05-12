@@ -223,7 +223,7 @@ struct ImportDetailView: View {
             }
             DetailLine(label: "Current audio", value: item.originalPath)
             if let managedAudioPath = item.managedAudioPath {
-                DetailLine(label: "Legacy processing copy", value: managedAudioPath)
+                DetailLine(label: "Processing copy", value: managedAudioPath)
             }
             if let fingerprint = item.audioFingerprint {
                 DetailLine(label: "Audio fingerprint", value: fingerprint)
@@ -258,7 +258,7 @@ struct ImportDetailView: View {
             lines.insert("\(label): \(sourcePath)", at: 1)
         }
         if let managedAudioPath = item.managedAudioPath {
-            lines.insert("Legacy processing copy: \(managedAudioPath)", at: min(2, lines.count))
+            lines.insert("Processing copy: \(managedAudioPath)", at: min(2, lines.count))
         }
         if let fingerprint = item.audioFingerprint {
             lines.append("Audio fingerprint: \(fingerprint)")
@@ -374,7 +374,10 @@ struct ImportDetailView: View {
 
     private var temporaryOperations: [FileOperationRecord] {
         item.fileOperations.filter { operation in
-            operation.kind.contains("temporary_processing") || operation.kind == "clear_cache"
+            operation.kind.contains("temporary_processing")
+                || operation.kind.contains("managed_processing")
+                || operation.kind == "delete_managed_processing_copy"
+                || operation.kind == "clear_cache"
         }
     }
 
