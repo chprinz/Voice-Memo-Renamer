@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import NaturalLanguage
 
 struct MacWhisperService {
     var executablePath: String
@@ -362,16 +363,17 @@ struct LMStudioService {
 
     private func analysisPrompt(for transcript: String, maxCharacters: Int) -> String {
         let prepared = prepareTranscript(transcript, maxCharacters: maxCharacters)
+        let outputLanguage = outputLanguage(for: transcript)
         return """
         Du bekommst ein Voice-Memo-Transkript. Erzeuge strukturierte Review-Daten.
 
         Regeln:
         - Antworte nur mit einem JSON-Objekt.
         - Schreibe kein Markdown, keine Analyse und keine Gedankenschritte.
-        - Deutsch.
+        - Ausgabesprache für title, summary, themes und mood: \(outputLanguage.promptName).
         - title: klarer natürlicher Titel, nicht generisch.
         - title: maximal 80 Zeichen.
-        - slug: 5-12 Wörter, maximal 90 Zeichen, klein, bindestriche, keine Umlaute, keine Wiederholungen.
+        - slug: 5-12 Wörter in derselben Ausgabesprache, maximal 90 Zeichen, klein, bindestriche, keine Umlaute, keine Wiederholungen.
         - short_slug: 2-4 prägnante Wörter aus dem slug, maximal 45 Zeichen.
         - summary: ein kurzer, klarer Satz, maximal 220 Zeichen.
         - summary: keine Details auflisten, nur den Kern des Memos benennen.
@@ -398,13 +400,15 @@ struct LMStudioService {
 
     private func compactAnalysisPrompt(for transcript: String, maxCharacters: Int) -> String {
         let prepared = prepareTranscript(transcript, maxCharacters: maxCharacters)
+        let outputLanguage = outputLanguage(for: transcript)
         return """
         Analysiere dieses Voice-Memo-Transkript knapp. Antworte nur mit kompaktem JSON:
         {"title":"","slug":"","short_slug":"","summary":"","themes":[],"mood":"","suggested_workflow":""}
 
         Grenzen:
+        title, summary, themes und mood: \(outputLanguage.promptName).
         title <= 80 Zeichen.
-        slug <= 70 Zeichen, lowercase-kebab-case, keine Wiederholungen.
+        slug <= 70 Zeichen, \(outputLanguage.promptName), lowercase-kebab-case, keine Wiederholungen.
         short_slug <= 35 Zeichen.
         summary <= 180 Zeichen, ein klarer Satz.
         themes: max 5 kurze Strings.
@@ -413,6 +417,53 @@ struct LMStudioService {
         Transkript:
         \(prepared)
         """
+    }
+
+    private func outputLanguage(for transcript: String) -> AnalysisOutputLanguage {
+        let sample = String(transcript.prefix(8_000))
+        guard !sample.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .german
+        }
+
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(sample)
+        let hypotheses = recognizer.languageHypotheses(withMaximum: 3)
+        let englishConfidence = hypotheses[.english] ?? 0
+        let germanConfidence = hypotheses[.german] ?? 0
+
+        if recognizer.dominantLanguage == .english,
+           englishConfidence >= 0.45,
+           englishConfidence >= germanConfidence * 1.2 {
+            return .english
+        }
+
+        let cueScores = languageCueScores(in: sample)
+        if cueScores.english >= 8,
+           cueScores.english >= cueScores.german * 2 {
+            return .english
+        }
+
+        return .german
+    }
+
+    private func languageCueScores(in text: String) -> (english: Int, german: Int) {
+        let words = text
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+            .lowercased()
+            .components(separatedBy: CharacterSet.letters.inverted)
+            .filter { !$0.isEmpty }
+
+        var english = 0
+        var german = 0
+        for word in words {
+            if Self.englishLanguageCues.contains(word) {
+                english += 1
+            }
+            if Self.germanLanguageCues.contains(word) {
+                german += 1
+            }
+        }
+        return (english, german)
     }
 
     private func prepareTranscript(_ transcript: String, maxCharacters: Int) -> String {
@@ -479,10 +530,10 @@ struct LMStudioService {
         let slug = boundedSlug(decoded.slug, fallback: title, maxComponents: 12, maxCharacters: 90)
         let shortSlug = boundedSlug(decoded.shortSlug ?? "", fallback: slug, maxComponents: 4, maxCharacters: 45)
         return AnalysisMetadata(
-            title: title.isEmpty ? "Voice Memo" : title,
+            title: title.isEmpty ? fallback.title : title,
             slug: slug,
             shortSlug: shortSlug,
-            summary: summary,
+            summary: summary.isEmpty ? fallback.summary : summary,
             themes: boundedThemes(decoded.themes),
             mood: decoded.mood?.bounded(to: 80).nilIfBlank,
             suggestedWorkflow: decoded.suggestedWorkflow?.nilIfBlank
@@ -565,6 +616,7 @@ struct LMStudioService {
     }
 
     private func fallbackAnalysis(from transcript: String) -> AnalysisMetadata {
+        let outputLanguage = outputLanguage(for: transcript)
         let sentences = transcript
             .replacingOccurrences(of: "\n", with: " ")
             .split(whereSeparator: { ".!?".contains($0) })
@@ -577,17 +629,31 @@ struct LMStudioService {
             .joined(separator: " ")
             .bounded(to: 80)
         let summary = boundedSummary(sentences.first ?? "")
-        let slug = boundedSlug(title, fallback: "voice memo", maxComponents: 8, maxCharacters: 70)
+        let slug = boundedSlug(title, fallback: outputLanguage.slugFallback, maxComponents: 8, maxCharacters: 70)
         return AnalysisMetadata(
-            title: title.isEmpty ? "Voice Memo" : title,
+            title: title.isEmpty ? outputLanguage.fallbackTitle : title,
             slug: slug,
-            shortSlug: boundedSlug(slug, fallback: "voice memo", maxComponents: 4, maxCharacters: 45),
-            summary: summary.isEmpty ? "Transcript was captured, but LM Studio did not return usable JSON." : summary,
+            shortSlug: boundedSlug(slug, fallback: outputLanguage.slugFallback, maxComponents: 4, maxCharacters: 45),
+            summary: summary.isEmpty ? outputLanguage.fallbackSummary : summary,
             themes: [],
             mood: nil,
             suggestedWorkflow: nil
         )
     }
+
+    private static let englishLanguageCues: Set<String> = [
+        "about", "after", "and", "are", "because", "but", "can", "could", "for", "from",
+        "have", "how", "into", "just", "like", "not", "of", "our", "should", "that",
+        "the", "then", "there", "this", "to", "was", "we", "were", "what", "when",
+        "where", "which", "with", "would", "you", "your"
+    ]
+
+    private static let germanLanguageCues: Set<String> = [
+        "aber", "also", "am", "auf", "aus", "bei", "bin", "das", "dass", "dem",
+        "den", "der", "die", "du", "ein", "eine", "einem", "einen", "einer", "es",
+        "fur", "habe", "hat", "ich", "im", "ist", "mit", "nicht", "oder", "sind",
+        "und", "von", "war", "was", "weil", "wenn", "wie", "wir", "zu"
+    ]
 
     private func get(path: String, timeout: TimeInterval) async throws -> Data {
         var request = URLRequest(url: baseURL.appendingPathComponent(path))
@@ -660,6 +726,39 @@ struct LMStudioService {
             message: fallbackMessage,
             details: "HTTP \(http.statusCode): \(body)"
         )
+    }
+}
+
+private enum AnalysisOutputLanguage {
+    case german
+    case english
+
+    var promptName: String {
+        switch self {
+        case .german: return "Deutsch"
+        case .english: return "English"
+        }
+    }
+
+    var fallbackTitle: String {
+        switch self {
+        case .german: return "Sprachnotiz"
+        case .english: return "Voice Memo"
+        }
+    }
+
+    var slugFallback: String {
+        switch self {
+        case .german: return "sprachnotiz"
+        case .english: return "voice memo"
+        }
+    }
+
+    var fallbackSummary: String {
+        switch self {
+        case .german: return "Transkript wurde erfasst, aber LM Studio hat kein brauchbares JSON geliefert."
+        case .english: return "Transcript was captured, but LM Studio did not return usable JSON."
+        }
     }
 }
 
