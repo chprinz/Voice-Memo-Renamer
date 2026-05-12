@@ -72,7 +72,7 @@ struct LMStudioService {
                 "temperature": 0.0,
                 "frequency_penalty": 0.6,
                 "max_tokens": attempt.maxTokens,
-                "response_format": ["type": "json_object"],
+                "response_format": analysisResponseFormat,
                 "stream": false
             ]
             let data = try JSONSerialization.data(withJSONObject: body)
@@ -100,6 +100,44 @@ struct LMStudioService {
         }
 
         throw ProcessingFailure(message: "LM Studio returned no analysis.", details: "")
+    }
+
+    private var analysisResponseFormat: [String: Any] {
+        [
+            "type": "json_schema",
+            "json_schema": [
+                "name": "voice_memo_analysis",
+                "strict": true,
+                "schema": [
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": [
+                        "title": ["type": "string"],
+                        "slug": ["type": "string"],
+                        "short_slug": ["type": "string"],
+                        "summary": ["type": "string"],
+                        "themes": [
+                            "type": "array",
+                            "items": ["type": "string"]
+                        ],
+                        "mood": ["type": "string"],
+                        "suggested_workflow": [
+                            "type": "string",
+                            "enum": ["obsidianJournal", "obsidianInbox", ""]
+                        ]
+                    ],
+                    "required": [
+                        "title",
+                        "slug",
+                        "short_slug",
+                        "summary",
+                        "themes",
+                        "mood",
+                        "suggested_workflow"
+                    ]
+                ]
+            ]
+        ]
     }
 
     private func loadedModel() async throws -> String {
