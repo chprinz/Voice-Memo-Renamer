@@ -144,8 +144,9 @@ final class ImportStore: ObservableObject {
                 guard Self.supportedAudioExtensions.contains(url.pathExtension.lowercased()) else { continue }
                 if var imported = await addItem(from: url) {
                     imported.workflow = policy.id
-                    imported.status = .new
+                    imported.status = .queued
                     update(imported)
+                    ImportProcessor(store: self).process(imported.id)
                 }
             }
         }
