@@ -19,7 +19,7 @@ final class ImportStore: ObservableObject {
         loadItems()
         migrateLegacyWorkflowReferences()
         backfillAudioFingerprints()
-        if settings.checkWatchFoldersAtLaunch {
+        if shouldScanWatchFoldersAtLaunch {
             Task { await scanWatchFolders() }
         }
     }
@@ -212,6 +212,10 @@ final class ImportStore: ObservableObject {
 
     var hasActiveProcessing: Bool {
         items.contains { Self.activeStatuses.contains($0.status) }
+    }
+
+    private var shouldScanWatchFoldersAtLaunch: Bool {
+        settings.checkWatchFoldersAtLaunch || settings.workflows.contains(where: \.usesWatchFolder)
     }
 
     func appStorageUsage() -> Int64 {
