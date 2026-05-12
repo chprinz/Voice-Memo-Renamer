@@ -118,6 +118,7 @@ struct ImportItem: Codable, Identifiable, Equatable {
 struct AppSettings: Codable, Equatable {
     var macWhisperPath = "/usr/local/bin/mw"
     var lmStudioBaseURL = "http://localhost:1234/v1"
+    var lmStudioModelID: String?
     var vaultRootPath = "\(NSHomeDirectory())/Library/Mobile Documents/iCloud~md~obsidian/Documents/Notes"
     var voiceInboxRelativePath = "📮INBOX/📻 VOICE INBOX"
     var journalAudioRelativePath = "🖋️ Journal/Audio"

@@ -50,11 +50,13 @@ struct MacWhisperService {
 
 struct LMStudioService {
     var baseURL: URL
+    var modelID: String?
     var maxTranscriptCharacters: Int
 
     func analyze(transcript: String) async throws -> AnalysisMetadata {
         let model = try await loadedModel()
-        let prompt = analysisPrompt(for: transcript)
+        let transcriptLimit = await contextAwareTranscriptLimit(for: model)
+        let prompt = analysisPrompt(for: transcript, maxCharacters: transcriptLimit)
         let body: [String: Any] = [
             "model": model,
             "messages": [
@@ -77,14 +79,24 @@ struct LMStudioService {
     private func loadedModel() async throws -> String {
         let data = try await get(path: "models", timeout: 10)
         let response = try JSONDecoder().decode(ModelsResponse.self, from: data)
+        if let modelID, !modelID.isEmpty, response.data.contains(where: { $0.id == modelID }) {
+            return modelID
+        }
         guard let model = response.data.first?.id else {
             throw ProcessingFailure(message: "No LM Studio model is loaded.", details: "Open LM Studio and load a local model.")
         }
         return model
     }
 
-    private func analysisPrompt(for transcript: String) -> String {
-        let prepared = prepareTranscript(transcript)
+    private func contextAwareTranscriptLimit(for modelID: String) async -> Int {
+        guard let info = try? await loadedContextInfo(for: modelID) else {
+            return maxTranscriptCharacters
+        }
+        return min(maxTranscriptCharacters, safeTranscriptCharacterLimit(for: info.loadedContextTokens))
+    }
+
+    private func analysisPrompt(for transcript: String, maxCharacters: Int) -> String {
+        let prepared = prepareTranscript(transcript, maxCharacters: maxCharacters)
         return """
         Du bekommst ein Voice-Memo-Transkript. Erzeuge strukturierte Review-Daten.
 
@@ -115,9 +127,9 @@ struct LMStudioService {
         """
     }
 
-    private func prepareTranscript(_ transcript: String) -> String {
-        guard transcript.count > maxTranscriptCharacters else { return transcript }
-        let sectionLength = maxTranscriptCharacters / 3
+    private func prepareTranscript(_ transcript: String, maxCharacters: Int) -> String {
+        guard transcript.count > maxCharacters else { return transcript }
+        let sectionLength = maxCharacters / 3
         let start = String(transcript.prefix(sectionLength))
         let end = String(transcript.suffix(sectionLength))
         let middleStart = transcript.index(transcript.startIndex, offsetBy: max(0, transcript.count / 2 - sectionLength / 2))
@@ -133,6 +145,29 @@ struct LMStudioService {
         [ENDE]
         \(end)
         """
+    }
+
+    private func safeTranscriptCharacterLimit(for contextTokens: Int) -> Int {
+        let reservedTokens = 2_500
+        let availableTokens = max(2_000, contextTokens - reservedTokens)
+        return max(6_000, availableTokens * 3)
+    }
+
+    private func loadedContextInfo(for modelID: String) async throws -> LMStudioLoadedContextInfo? {
+        let requestURL = nativeBaseURL.appendingPathComponent("models")
+        var request = URLRequest(url: requestURL)
+        request.timeoutInterval = 10
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response: response, data: data, fallbackMessage: "LM Studio model metadata request failed.")
+        let decoded = try JSONDecoder().decode(LMStudioNativeModelsResponse.self, from: data)
+        let loadedModels = decoded.models.filter { !$0.loadedInstances.isEmpty }
+        let selectedModel = loadedModels.first { model in
+            model.key == modelID || model.loadedInstances.contains { $0.id == modelID }
+        } ?? loadedModels.first
+        guard let selectedModel, let instance = selectedModel.loadedInstances.first else {
+            return nil
+        }
+        return LMStudioLoadedContextInfo(loadedContextTokens: instance.config.contextLength)
     }
 
     private func parseAnalysis(from content: String) throws -> AnalysisMetadata {
@@ -158,7 +193,8 @@ struct LMStudioService {
     private func get(path: String, timeout: TimeInterval) async throws -> Data {
         var request = URLRequest(url: baseURL.appendingPathComponent(path))
         request.timeoutInterval = timeout
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response: response, data: data, fallbackMessage: "LM Studio request failed.")
         return data
     }
 
@@ -168,8 +204,32 @@ struct LMStudioService {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = body
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response: response, data: data, fallbackMessage: "LM Studio analysis request failed.")
         return data
+    }
+
+    private var nativeBaseURL: URL {
+        if baseURL.path.hasSuffix("/v1") {
+            return baseURL
+                .deletingLastPathComponent()
+                .appendingPathComponent("api")
+                .appendingPathComponent("v1")
+        }
+        return baseURL
+            .appendingPathComponent("api")
+            .appendingPathComponent("v1")
+    }
+
+    private func validate(response: URLResponse, data: Data, fallbackMessage: String) throws {
+        guard let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) else {
+            return
+        }
+        let body = String(data: data, encoding: .utf8) ?? ""
+        throw ProcessingFailure(
+            message: fallbackMessage,
+            details: "HTTP \(http.statusCode): \(body)"
+        )
     }
 }
 
@@ -293,6 +353,7 @@ final class ImportProcessor {
 
                 let lm = LMStudioService(
                     baseURL: URL(string: store.settings.lmStudioBaseURL) ?? URL(string: "http://localhost:1234/v1")!,
+                    modelID: store.settings.lmStudioModelID,
                     maxTranscriptCharacters: store.settings.maxTranscriptCharactersForAnalysis
                 )
                 let analysis = try await lm.analyze(transcript: transcript)
@@ -347,6 +408,37 @@ struct ProcessingFailure: Error {
 private struct ModelsResponse: Decodable {
     struct Model: Decodable { var id: String }
     var data: [Model]
+}
+
+private struct LMStudioLoadedContextInfo {
+    var loadedContextTokens: Int
+}
+
+private struct LMStudioNativeModelsResponse: Decodable {
+    struct Model: Decodable {
+        struct LoadedInstance: Decodable {
+            struct Config: Decodable {
+                var contextLength: Int
+
+                enum CodingKeys: String, CodingKey {
+                    case contextLength = "context_length"
+                }
+            }
+
+            var id: String
+            var config: Config
+        }
+
+        var key: String
+        var loadedInstances: [LoadedInstance]
+
+        enum CodingKeys: String, CodingKey {
+            case key
+            case loadedInstances = "loaded_instances"
+        }
+    }
+
+    var models: [Model]
 }
 
 private struct ChatCompletionResponse: Decodable {

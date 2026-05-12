@@ -34,22 +34,24 @@ struct ContentView: View {
     @State private var selectedItemID: ImportItem.ID?
 
     var body: some View {
-        NavigationSplitView {
-            List(NavigationSection.allCases, selection: $selection) { section in
-                Label(section.label, systemImage: section.icon)
-                    .badge(count(for: section))
-                    .tag(section)
-            }
-            .navigationTitle("Memo Import")
-            .navigationSplitViewColumnWidth(min: 190, ideal: 210)
-        } detail: {
+        HStack(spacing: 0) {
+            SidebarView(selection: $selection, count: count(for:))
+                .frame(width: 210)
+
+            Divider()
+
             mainContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .background(Color(nsColor: .windowBackgroundColor))
         .onChange(of: selection) { _ in
-            selectedItemID = filteredItems.first?.id
+            syncSelection()
         }
         .onAppear {
-            selectedItemID = filteredItems.first?.id
+            syncSelection()
+        }
+        .onChange(of: store.items.map(\.id)) { _ in
+            syncSelection()
         }
     }
 
@@ -58,7 +60,21 @@ struct ContentView: View {
         if selection == .settings {
             SettingsView()
         } else {
-            HSplitView {
+            if let selectedItemID, let item = store.item(id: selectedItemID) {
+                HSplitView {
+                    ImportListView(
+                        title: selection.label,
+                        showsImportHeader: selection == .toReview,
+                        emptyMessage: emptyMessage,
+                        items: filteredItems,
+                        selectedItemID: $selectedItemID
+                    )
+                    .frame(minWidth: 360, idealWidth: 430, maxWidth: 520)
+
+                    ImportDetailView(item: item)
+                        .frame(minWidth: 520)
+                }
+            } else {
                 ImportListView(
                     title: selection.label,
                     showsImportHeader: selection == .toReview,
@@ -66,15 +82,7 @@ struct ContentView: View {
                     items: filteredItems,
                     selectedItemID: $selectedItemID
                 )
-                .frame(minWidth: 380, idealWidth: 440, maxWidth: 560)
-
-                if let selectedItemID, let item = store.item(id: selectedItemID) {
-                    ImportDetailView(item: item)
-                        .frame(minWidth: 520)
-                } else {
-                    EmptyDetailView(message: emptyMessage)
-                        .frame(minWidth: 520)
-                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
     }
@@ -121,6 +129,79 @@ struct ContentView: View {
             0
         }
     }
+
+    private func syncSelection() {
+        let ids = Set(filteredItems.map(\.id))
+        if let selectedItemID, ids.contains(selectedItemID) {
+            return
+        }
+        selectedItemID = filteredItems.first?.id
+    }
+}
+
+struct SidebarView: View {
+    @Binding var selection: NavigationSection
+    var count: (NavigationSection) -> Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Voice Memo Renamer")
+                .font(.headline)
+                .padding(.horizontal, 14)
+                .padding(.top, 16)
+
+            VStack(spacing: 4) {
+                ForEach(NavigationSection.allCases) { section in
+                    Button {
+                        selection = section
+                    } label: {
+                        SidebarRow(
+                            section: section,
+                            count: count(section),
+                            isSelected: selection == section
+                        )
+                    }
+                    .buttonStyle(SidebarButtonStyle(isSelected: selection == section))
+                }
+            }
+            .padding(.horizontal, 8)
+
+            Spacer()
+        }
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
+}
+
+struct SidebarRow: View {
+    var section: NavigationSection
+    var count: Int
+    var isSelected: Bool
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: section.icon)
+                .font(.system(size: 15, weight: .medium))
+                .frame(width: 20)
+                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+
+            Text(section.label)
+                .font(.subheadline.weight(isSelected ? .semibold : .regular))
+                .lineLimit(1)
+
+            Spacer(minLength: 8)
+
+            if count > 0 {
+                Text("\(count)")
+                    .font(.caption.weight(.semibold))
+                    .monospacedDigit()
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(Color.secondary.opacity(0.16))
+                    .clipShape(Capsule())
+            }
+        }
+        .contentShape(Rectangle())
+    }
 }
 
 struct SidebarButtonStyle: ButtonStyle {
@@ -164,13 +245,10 @@ struct ImportListView: View {
             .padding(18)
 
             if items.isEmpty {
-                VStack(spacing: 10) {
-                    Image(systemName: "tray")
-                        .font(.title)
-                        .foregroundStyle(.secondary)
-                    Text(emptyMessage)
-                        .foregroundStyle(.secondary)
-                }
+                EmptyListState(
+                    message: emptyMessage,
+                    showsImportIcon: showsImportHeader
+                )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(items, selection: $selectedItemID) { item in
@@ -180,7 +258,7 @@ struct ImportListView: View {
                 .listStyle(.inset)
             }
         }
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(Color(nsColor: .windowBackgroundColor))
         .if(showsImportHeader) { view in
             view.onDrop(of: supportedTypes, isTargeted: $isTargeted) { providers in
                 handleDrop(providers)
@@ -226,6 +304,25 @@ struct ImportListView: View {
                 }
             }
         }
+    }
+}
+
+struct EmptyListState: View {
+    var message: String
+    var showsImportIcon: Bool
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: showsImportIcon ? "waveform.badge.plus" : "tray")
+                .font(.system(size: 36, weight: .regular))
+                .foregroundStyle(Color.secondary)
+
+            Text(message)
+                .font(.headline)
+                .foregroundStyle(.primary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(32)
     }
 }
 

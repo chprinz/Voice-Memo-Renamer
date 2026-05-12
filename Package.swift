@@ -3,17 +3,17 @@
 import PackageDescription
 
 let package = Package(
-    name: "MemoImportCenter",
+    name: "VoiceMemoRenamer",
     platforms: [
         .macOS(.v13)
     ],
     products: [
-        .executable(name: "MemoImportCenter", targets: ["MemoImportCenter"])
+        .executable(name: "VoiceMemoRenamer", targets: ["VoiceMemoRenamer"])
     ],
     targets: [
         .executableTarget(
-            name: "MemoImportCenter",
-            path: "Sources/MemoImportCenter"
+            name: "VoiceMemoRenamer",
+            path: "Sources/VoiceMemoRenamer"
         )
     ]
 )

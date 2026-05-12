@@ -1,19 +1,19 @@
 import SwiftUI
 
 @main
-struct MemoImportCenterApp: App {
+struct VoiceMemoRenamerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var store = ImportStore()
 
     var body: some Scene {
-        WindowGroup("Memo Import Center", id: "main") {
+        WindowGroup("Voice Memo Renamer", id: "main") {
             ContentView()
                 .environmentObject(store)
                 .frame(minWidth: 980, minHeight: 640)
         }
         .windowStyle(.titleBar)
 
-        MenuBarExtra("Memo Import Center", systemImage: "waveform") {
+        MenuBarExtra("Voice Memo Renamer", systemImage: "waveform") {
             MenuBarContent()
                 .environmentObject(store)
         }
@@ -35,7 +35,7 @@ struct MenuBarContent: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Button("Open Import Center") {
+        Button("Open Voice Memo Renamer") {
             openWindow(id: "main")
             NSApp.activate(ignoringOtherApps: true)
         }

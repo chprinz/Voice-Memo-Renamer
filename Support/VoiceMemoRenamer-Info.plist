@@ -5,13 +5,13 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleExecutable</key>
-	<string>MemoImportCenter</string>
+	<string>VoiceMemoRenamer</string>
 	<key>CFBundleIdentifier</key>
-	<string>at.littleprinz.MemoImportCenter</string>
+	<string>at.littleprinz.VoiceMemoRenamer</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>Memo Import Center</string>
+	<string>Voice Memo Renamer</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
