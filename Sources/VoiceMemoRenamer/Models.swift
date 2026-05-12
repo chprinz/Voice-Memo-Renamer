@@ -57,24 +57,12 @@ enum SourceBehavior: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-enum WorkflowDestination: String, Codable, CaseIterable, Identifiable {
+enum WorkflowDestination: String, Codable {
     case obsidianJournal
     case obsidianInbox
     case projectFolder
     case sameFolder
     case archiveFolder
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .obsidianJournal: "Obsidian Journal"
-        case .obsidianInbox: "Obsidian Inbox"
-        case .projectFolder: "Custom Folder"
-        case .sameFolder: "Same Folder"
-        case .archiveFolder: "Archive Folder"
-        }
-    }
 }
 
 enum TranscriptBehavior: String, Codable, CaseIterable, Identifiable {
@@ -250,6 +238,9 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
             let legacyOriginal = try container.decodeIfPresent(LegacyOriginalBehavior.self, forKey: .originalBehavior) ?? .keepOriginal
             audioFileBehavior = Self.migratedAudioFileBehavior(audioBehavior: legacyAudio, originalBehavior: legacyOriginal)
         }
+        if destinationPath.isEmpty {
+            destinationPath = Self.migratedDestinationPath(for: destination)
+        }
     }
 
     func encode(to encoder: Encoder) throws {
@@ -283,6 +274,19 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
             return .moveToFolder
         case .doNotExportAudio, .linkExistingAudio:
             return .leaveInPlace
+        }
+    }
+
+    private static func migratedDestinationPath(for destination: WorkflowDestination) -> String {
+        switch destination {
+        case .obsidianJournal:
+            return "🖋️ Journal"
+        case .obsidianInbox:
+            return "📮INBOX/📻 VOICE INBOX"
+        case .archiveFolder:
+            return "📦 Archive/Voice Memos"
+        case .projectFolder, .sameFolder:
+            return ""
         }
     }
 }

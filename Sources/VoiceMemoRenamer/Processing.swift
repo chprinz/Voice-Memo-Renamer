@@ -341,37 +341,17 @@ struct ObsidianJournalExporter {
         if !policy.audioDestinationPath.isEmpty {
             return resolvedFolder(policy.audioDestinationPath, vaultRoot: vaultRoot)
         }
-        switch policy.destination {
-        case .obsidianJournal:
-            return vaultRoot.appendingPathComponent(settings.journalAudioRelativePath, isDirectory: true)
-        case .obsidianInbox:
-            return vaultRoot.appendingPathComponent(settings.voiceInboxRelativePath, isDirectory: true)
-        case .projectFolder:
-            return policy.destinationPath.isEmpty
-                ? URL(fileURLWithPath: item.originalPath).deletingLastPathComponent()
-                : URL(fileURLWithPath: NSString(string: policy.destinationPath).expandingTildeInPath, isDirectory: true)
-        case .sameFolder:
-            return URL(fileURLWithPath: item.originalPath).deletingLastPathComponent()
-        case .archiveFolder:
-            return vaultRoot.appendingPathComponent(settings.archiveRelativePath, isDirectory: true)
-        }
+        return workflowFolder(for: policy, vaultRoot: vaultRoot, item: item)
     }
 
     private func transcriptDestinationDirectory(for policy: WorkflowPolicy, vaultRoot: URL, item: ImportItem) -> URL {
-        switch policy.destination {
-        case .obsidianJournal:
-            return vaultRoot.appendingPathComponent(settings.monthlyNotesRelativePath, isDirectory: true)
-        case .obsidianInbox:
-            return vaultRoot.appendingPathComponent(settings.voiceInboxRelativePath, isDirectory: true)
-        case .projectFolder:
-            return policy.destinationPath.isEmpty
-                ? URL(fileURLWithPath: item.originalPath).deletingLastPathComponent()
-                : URL(fileURLWithPath: NSString(string: policy.destinationPath).expandingTildeInPath, isDirectory: true)
-        case .sameFolder:
-            return URL(fileURLWithPath: item.originalPath).deletingLastPathComponent()
-        case .archiveFolder:
-            return vaultRoot.appendingPathComponent(settings.archiveRelativePath, isDirectory: true)
-        }
+        workflowFolder(for: policy, vaultRoot: vaultRoot, item: item)
+    }
+
+    private func workflowFolder(for policy: WorkflowPolicy, vaultRoot: URL, item: ImportItem) -> URL {
+        policy.destinationPath.isEmpty
+            ? URL(fileURLWithPath: item.originalPath).deletingLastPathComponent()
+            : resolvedFolder(policy.destinationPath, vaultRoot: vaultRoot)
     }
 
     private func resolvedFolder(_ path: String, vaultRoot: URL) -> URL {
@@ -385,7 +365,7 @@ struct ObsidianJournalExporter {
     private func exportTranscriptIfNeeded(item: ImportItem, policy: WorkflowPolicy, vaultRoot: URL, audioFilename: String?) throws -> URL? {
         switch policy.transcriptBehavior {
         case .appendToMonthlyNote:
-            let monthlyDirectory = vaultRoot.appendingPathComponent(settings.monthlyNotesRelativePath, isDirectory: true)
+            let monthlyDirectory = transcriptDestinationDirectory(for: policy, vaultRoot: vaultRoot, item: item)
             try FileManager.default.createDirectory(at: monthlyDirectory, withIntermediateDirectories: true)
             let monthlyURL = monthlyDirectory.appendingPathComponent("\(DateFormatter.monthlyNote.string(from: item.recordingDate)).md")
             let entry = markdownEntry(for: item, audioFilename: audioFilename)

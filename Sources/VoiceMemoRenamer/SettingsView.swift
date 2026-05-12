@@ -363,21 +363,13 @@ struct WorkflowPolicyEditor: View {
                 FolderPathRow(title: "Watch folder", path: $policy.watchFolderPath)
             }
 
-            Picker("Destination", selection: $policy.destination) {
-                ForEach(WorkflowDestination.allCases) { destination in
-                    Text(destination.label).tag(destination)
-                }
-            }
-            if policy.destination == .projectFolder || policy.destination == .archiveFolder {
-                FolderPathRow(title: "Destination folder", path: $policy.destinationPath)
-            } else if policy.destination == .obsidianInbox || policy.destination == .obsidianJournal {
-                TextField("Obsidian relative path", text: $policy.destinationPath)
-            }
-
             Picker("Transcript", selection: $policy.transcriptBehavior) {
                 ForEach(visibleTranscriptBehaviors) { behavior in
                     Text(behavior.label).tag(behavior)
                 }
+            }
+            if policy.transcriptBehavior != .doNotExportTranscript {
+                FolderPathRow(title: transcriptFolderTitle, path: $policy.destinationPath)
             }
 
             Picker("Audio file", selection: $policy.audioFileBehavior) {
@@ -404,6 +396,17 @@ struct WorkflowPolicyEditor: View {
         [.appendToMonthlyNote, .createMarkdownFile, .doNotExportTranscript]
     }
 
+    private var transcriptFolderTitle: String {
+        switch policy.transcriptBehavior {
+        case .appendToMonthlyNote:
+            return "Monthly note folder"
+        case .createMarkdownFile, .saveTranscriptOnly:
+            return "Markdown folder"
+        case .doNotExportTranscript:
+            return "Transcript folder"
+        }
+    }
+
     private var defaultBinding: Binding<Bool> {
         Binding {
             isDefault
@@ -421,6 +424,8 @@ struct FolderPathRow: View {
 
     var body: some View {
         HStack {
+            Text(title)
+                .frame(width: 140, alignment: .leading)
             Text(path.isEmpty ? "No folder selected" : path)
                 .foregroundStyle(path.isEmpty ? .secondary : .primary)
                 .lineLimit(1)
