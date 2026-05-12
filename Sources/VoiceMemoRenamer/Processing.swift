@@ -323,6 +323,9 @@ struct ObsidianJournalExporter {
     }
 
     private func audioDestinationDirectory(for policy: WorkflowPolicy, vaultRoot: URL, item: ImportItem) -> URL {
+        if !policy.audioDestinationPath.isEmpty {
+            return resolvedFolder(policy.audioDestinationPath, vaultRoot: vaultRoot)
+        }
         switch policy.destination {
         case .obsidianJournal:
             return vaultRoot.appendingPathComponent(settings.journalAudioRelativePath, isDirectory: true)
@@ -354,6 +357,14 @@ struct ObsidianJournalExporter {
         case .archiveFolder:
             return vaultRoot.appendingPathComponent(settings.archiveRelativePath, isDirectory: true)
         }
+    }
+
+    private func resolvedFolder(_ path: String, vaultRoot: URL) -> URL {
+        let expanded = NSString(string: path).expandingTildeInPath
+        if expanded.hasPrefix("/") {
+            return URL(fileURLWithPath: expanded, isDirectory: true)
+        }
+        return vaultRoot.appendingPathComponent(path, isDirectory: true)
     }
 
     private func exportTranscriptIfNeeded(item: ImportItem, policy: WorkflowPolicy, vaultRoot: URL, audioFilename: String?) throws -> URL? {
@@ -628,7 +639,7 @@ private struct AnalysisResponse: Decodable {
     var summary: String
     var themes: [String]
     var mood: String?
-    var suggestedWorkflow: WorkflowID?
+    var suggestedWorkflow: String?
 
     enum CodingKeys: String, CodingKey {
         case title

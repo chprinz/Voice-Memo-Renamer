@@ -85,11 +85,11 @@ final class ImportStore: ObservableObject {
         items.first(where: { $0.id == id })
     }
 
-    func workflowPolicy(for workflow: WorkflowID) -> WorkflowPolicy {
+    func workflowPolicy(for workflow: String) -> WorkflowPolicy {
         settings.policy(for: workflow)
     }
 
-    func setDefaultWorkflow(_ workflow: WorkflowID) {
+    func setDefaultWorkflow(_ workflow: String) {
         settings.defaultWorkflow = workflow
     }
 
@@ -101,6 +101,43 @@ final class ImportStore: ObservableObject {
         }
         if policy.isEnabled, policy.id == settings.defaultWorkflow {
             settings.processingStoragePolicy = policy.processingStoragePolicy
+        }
+    }
+
+    func addWorkflow() -> WorkflowPolicy {
+        var workflow = WorkflowPolicy(
+            id: "workflow-\(UUID().uuidString)",
+            name: "New Workflow",
+            isEnabled: true,
+            sourceBehavior: .manualOnly,
+            watchFolderPath: "",
+            destination: .projectFolder,
+            destinationPath: "",
+            audioDestinationPath: "",
+            transcriptBehavior: .createMarkdownFile,
+            audioBehavior: .doNotExportAudio,
+            originalBehavior: .keepOriginal,
+            reviewBehavior: .requireReview,
+            filenamePattern: WorkflowPolicy.defaultFilenamePattern,
+            processingStoragePolicy: .deleteAfterSuccessfulExport
+        )
+        var suffix = 2
+        while settings.workflows.contains(where: { $0.name == workflow.name }) {
+            workflow.name = "New Workflow \(suffix)"
+            suffix += 1
+        }
+        settings.workflows.append(workflow)
+        return workflow
+    }
+
+    func deleteWorkflow(id: String) {
+        guard settings.workflows.count > 1 else { return }
+        settings.workflows.removeAll { $0.id == id }
+        if settings.defaultWorkflow == id {
+            settings.defaultWorkflow = settings.workflows.first?.id ?? StandardWorkflowID.obsidianJournal
+        }
+        for index in items.indices where items[index].workflow == id {
+            items[index].workflow = settings.defaultWorkflow
         }
     }
 
@@ -201,7 +238,7 @@ final class ImportStore: ObservableObject {
         return candidate
     }
 
-    private func workflowForSource(_ sourceURL: URL) -> WorkflowID {
+    private func workflowForSource(_ sourceURL: URL) -> String {
         settings.workflows.first { policy in
             policy.usesWatchFolder && sourceURL.path.hasPrefix(NSString(string: policy.watchFolderPath).expandingTildeInPath)
         }?.id ?? settings.defaultWorkflow

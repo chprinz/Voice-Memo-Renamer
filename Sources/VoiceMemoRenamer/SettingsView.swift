@@ -3,7 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var store: ImportStore
     @Environment(\.dismiss) private var dismiss
-    @State private var selectedWorkflowID: WorkflowID = .obsidianJournal
+    @State private var selectedWorkflowID: String = StandardWorkflowID.obsidianJournal
     @State private var macWhisperStatus: String = "Not checked"
     @State private var isChecking = false
     @State private var lmStudioModels: [String] = []
@@ -35,7 +35,6 @@ struct SettingsView: View {
                 Form {
                     generalSection
                     workflowsSection
-                    sourcesSection
                     storageSection
                     servicesSection
                 }
@@ -48,6 +47,7 @@ struct SettingsView: View {
         .background(Color(nsColor: .textBackgroundColor))
         .onAppear {
             selectedWorkflowID = store.settings.defaultWorkflow
+            checkMacWhisper()
             refreshModels()
         }
     }
@@ -59,17 +59,33 @@ struct SettingsView: View {
                     Text(workflow.name).tag(workflow.id)
                 }
             }
+            Toggle("Check watch folders when the app starts", isOn: $store.settings.checkWatchFoldersAtLaunch)
         }
     }
 
     private var workflowsSection: some View {
         Section("Workflows") {
-            Picker("Workflow", selection: $selectedWorkflowID) {
-                ForEach(store.settings.workflows) { workflow in
-                    Text(workflow.name).tag(workflow.id)
+            HStack {
+                Picker("Workflow", selection: $selectedWorkflowID) {
+                    ForEach(store.settings.workflows) { workflow in
+                        Text(workflow.name).tag(workflow.id)
+                    }
                 }
+                Spacer()
+                Button {
+                    let workflow = store.addWorkflow()
+                    selectedWorkflowID = workflow.id
+                } label: {
+                    Label("Add", systemImage: "plus")
+                }
+                Button {
+                    store.deleteWorkflow(id: selectedWorkflowID)
+                    selectedWorkflowID = store.settings.defaultWorkflow
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+                .disabled(store.settings.workflows.count <= 1)
             }
-            .pickerStyle(.segmented)
 
             if let binding = workflowBinding(for: selectedWorkflowID) {
                 WorkflowPolicyEditor(policy: binding, isDefault: store.settings.defaultWorkflow == selectedWorkflowID) {
@@ -79,31 +95,17 @@ struct SettingsView: View {
         }
     }
 
-    private var sourcesSection: some View {
-        Section("Sources / Watch Folders") {
-            Toggle("Check watch folders when the app starts", isOn: $store.settings.checkWatchFoldersAtLaunch)
-            TextField("JPR watch folder", text: $store.settings.jprWatchFolderPath)
-            Button {
-                Task { await store.scanWatchFolders() }
-            } label: {
-                Label("Check Watch Folders Now", systemImage: "arrow.clockwise")
-            }
-        }
-    }
-
     private var storageSection: some View {
         Section("Storage") {
-            Picker("Processing copies", selection: $store.settings.processingStoragePolicy) {
-                ForEach(ProcessingStoragePolicy.allCases) { policy in
-                    Text(policy.label).tag(policy)
-                }
-            }
             HStack {
                 Text("Current app storage")
                 Spacer()
                 Text(FileSizeFormatter.storageText(bytes: store.appStorageUsage()))
                     .foregroundStyle(.secondary)
             }
+            Text("App storage contains temporary working copies used while MacWhisper transcribes and analyzes audio. Original audio is not deleted by this cleanup.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Button("Clean Completed Files") {
                 store.cleanCompletedFiles()
             }
@@ -178,7 +180,7 @@ struct SettingsView: View {
         }
     }
 
-    private func workflowBinding(for id: WorkflowID) -> Binding<WorkflowPolicy>? {
+    private func workflowBinding(for id: String) -> Binding<WorkflowPolicy>? {
         guard let index = store.settings.workflows.firstIndex(where: { $0.id == id }) else {
             return nil
         }
@@ -351,45 +353,48 @@ struct WorkflowPolicyEditor: View {
             TextField("Name", text: $policy.name)
             Toggle("Enabled", isOn: $policy.isEnabled)
             Toggle("Default workflow", isOn: defaultBinding)
+
             Picker("Source behavior", selection: $policy.sourceBehavior) {
                 ForEach(SourceBehavior.allCases) { behavior in
                     Text(behavior.label).tag(behavior)
                 }
             }
             if policy.sourceBehavior.usesWatchFolder {
-                TextField("Watch folder path", text: $policy.watchFolderPath)
+                FolderPathRow(title: "Watch folder", path: $policy.watchFolderPath)
             }
+
             Picker("Destination", selection: $policy.destination) {
                 ForEach(WorkflowDestination.allCases) { destination in
                     Text(destination.label).tag(destination)
                 }
             }
-            TextField("Destination path", text: $policy.destinationPath)
+            if policy.destination == .projectFolder || policy.destination == .archiveFolder {
+                FolderPathRow(title: "Destination folder", path: $policy.destinationPath)
+            } else if policy.destination == .obsidianInbox || policy.destination == .obsidianJournal {
+                TextField("Obsidian relative path", text: $policy.destinationPath)
+            }
+
             Picker("Transcript", selection: $policy.transcriptBehavior) {
-                ForEach(TranscriptBehavior.allCases) { behavior in
+                ForEach(visibleTranscriptBehaviors) { behavior in
                     Text(behavior.label).tag(behavior)
                 }
             }
+
             Picker("Audio", selection: $policy.audioBehavior) {
-                ForEach(AudioBehavior.allCases) { behavior in
+                ForEach(visibleAudioBehaviors) { behavior in
                     Text(behavior.label).tag(behavior)
                 }
             }
-            Picker("Original", selection: $policy.originalBehavior) {
-                ForEach(OriginalBehavior.allCases) { behavior in
+            if policy.audioBehavior == .copyAudioToDestination || policy.audioBehavior == .moveAudioToDestination {
+                FolderPathRow(title: "Audio folder", path: $policy.audioDestinationPath)
+            }
+
+            Picker("Original file", selection: $policy.originalBehavior) {
+                ForEach(visibleOriginalBehaviors) { behavior in
                     Text(behavior.label).tag(behavior)
                 }
             }
-            Picker("Review", selection: $policy.reviewBehavior) {
-                ForEach(ReviewBehavior.allCases) { behavior in
-                    Text(behavior.label).tag(behavior)
-                }
-            }
-            Picker("Processing copy", selection: $policy.processingStoragePolicy) {
-                ForEach(ProcessingStoragePolicy.allCases) { behavior in
-                    Text(behavior.label).tag(behavior)
-                }
-            }
+
             TextField("Filename pattern", text: $policy.filenamePattern)
             HStack {
                 Text(FilenamePattern.preview(pattern: policy.filenamePattern, workflowName: policy.name))
@@ -401,6 +406,18 @@ struct WorkflowPolicyEditor: View {
         }
     }
 
+    private var visibleTranscriptBehaviors: [TranscriptBehavior] {
+        [.appendToMonthlyNote, .createMarkdownFile, .doNotExportTranscript]
+    }
+
+    private var visibleAudioBehaviors: [AudioBehavior] {
+        [.copyAudioToDestination, .moveAudioToDestination, .doNotExportAudio]
+    }
+
+    private var visibleOriginalBehaviors: [OriginalBehavior] {
+        [.keepOriginal, .archiveOriginal, .renameOriginalInPlace, .neverDeleteAutomatically]
+    }
+
     private var defaultBinding: Binding<Bool> {
         Binding {
             isDefault
@@ -408,6 +425,34 @@ struct WorkflowPolicyEditor: View {
             if isOn {
                 makeDefault()
             }
+        }
+    }
+}
+
+struct FolderPathRow: View {
+    var title: String
+    @Binding var path: String
+
+    var body: some View {
+        HStack {
+            Text(path.isEmpty ? "No folder selected" : path)
+                .foregroundStyle(path.isEmpty ? .secondary : .primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Button("Choose...") {
+                chooseFolder()
+            }
+        }
+    }
+
+    private func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.title = title
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let url = panel.url {
+            path = url.path
         }
     }
 }

@@ -185,7 +185,7 @@ struct ContentView: View {
         }
     }
 
-    private var defaultWorkflowBinding: Binding<WorkflowID> {
+    private var defaultWorkflowBinding: Binding<String> {
         Binding {
             store.settings.defaultWorkflow
         } set: { workflow in

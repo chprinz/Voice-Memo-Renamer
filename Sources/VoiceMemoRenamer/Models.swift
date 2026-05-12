@@ -30,24 +30,11 @@ enum ImportStatus: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-enum WorkflowID: String, Codable, CaseIterable, Identifiable {
-    case obsidianJournal
-    case obsidianInbox
-    case projectFolder
-    case fieldRecordingLibrary
-    case renameInPlace
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .obsidianJournal: "Obsidian Journal"
-        case .obsidianInbox: "Obsidian Inbox"
-        case .projectFolder: "Project Folder"
-        case .fieldRecordingLibrary: "Field Recording Library"
-        case .renameInPlace: "Rename in Place"
-        }
-    }
+enum StandardWorkflowID {
+    static let obsidianJournal = "obsidianJournal"
+    static let obsidianInbox = "obsidianInbox"
+    static let transcriptOnly = "transcriptOnly"
+    static let renameInPlace = "renameInPlace"
 }
 
 enum SourceBehavior: String, Codable, CaseIterable, Identifiable {
@@ -83,7 +70,7 @@ enum WorkflowDestination: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .obsidianJournal: "Obsidian Journal"
         case .obsidianInbox: "Obsidian Inbox"
-        case .projectFolder: "Project Folder"
+        case .projectFolder: "Custom Folder"
         case .sameFolder: "Same Folder"
         case .archiveFolder: "Archive Folder"
         }
@@ -179,13 +166,14 @@ enum ProcessingStoragePolicy: String, Codable, CaseIterable, Identifiable {
 }
 
 struct WorkflowPolicy: Codable, Identifiable, Equatable {
-    var id: WorkflowID
+    var id: String
     var name: String
     var isEnabled: Bool
     var sourceBehavior: SourceBehavior
     var watchFolderPath: String
     var destination: WorkflowDestination
     var destinationPath: String
+    var audioDestinationPath: String
     var transcriptBehavior: TranscriptBehavior
     var audioBehavior: AudioBehavior
     var originalBehavior: OriginalBehavior
@@ -205,7 +193,7 @@ struct AnalysisMetadata: Codable, Equatable {
     var summary: String
     var themes: [String]
     var mood: String?
-    var suggestedWorkflow: WorkflowID?
+    var suggestedWorkflow: String?
 }
 
 struct ProcessingError: Codable, Equatable {
@@ -234,7 +222,7 @@ struct ImportItem: Codable, Identifiable, Equatable {
     var durationSeconds: Double?
     var transcript: String?
     var analysis: AnalysisMetadata?
-    var workflow: WorkflowID = .obsidianJournal
+    var workflow: String = StandardWorkflowID.obsidianJournal
     var status: ImportStatus = .new
     var retryCount = 0
     var importedAt: Date?
@@ -273,7 +261,7 @@ struct AppSettings: Codable, Equatable {
     var voiceInboxRelativePath = "📮INBOX/📻 VOICE INBOX"
     var journalAudioRelativePath = "🖋️ Journal/Audio"
     var monthlyNotesRelativePath = "🖋️ Journal"
-    var defaultWorkflow: WorkflowID = .obsidianJournal
+    var defaultWorkflow: String = StandardWorkflowID.obsidianJournal
     var workflows: [WorkflowPolicy] = WorkflowPolicy.defaults
     var maxTranscriptCharactersForAnalysis = 24000
     var transcriptionTimeoutSeconds = 900
@@ -313,7 +301,7 @@ struct AppSettings: Codable, Equatable {
         voiceInboxRelativePath = try container.decodeIfPresent(String.self, forKey: .voiceInboxRelativePath) ?? voiceInboxRelativePath
         journalAudioRelativePath = try container.decodeIfPresent(String.self, forKey: .journalAudioRelativePath) ?? journalAudioRelativePath
         monthlyNotesRelativePath = try container.decodeIfPresent(String.self, forKey: .monthlyNotesRelativePath) ?? monthlyNotesRelativePath
-        defaultWorkflow = try container.decodeIfPresent(WorkflowID.self, forKey: .defaultWorkflow) ?? defaultWorkflow
+        defaultWorkflow = try container.decodeIfPresent(String.self, forKey: .defaultWorkflow) ?? defaultWorkflow
         workflows = try container.decodeIfPresent([WorkflowPolicy].self, forKey: .workflows) ?? WorkflowPolicy.defaults
         maxTranscriptCharactersForAnalysis = try container.decodeIfPresent(Int.self, forKey: .maxTranscriptCharactersForAnalysis) ?? maxTranscriptCharactersForAnalysis
         transcriptionTimeoutSeconds = try container.decodeIfPresent(Int.self, forKey: .transcriptionTimeoutSeconds) ?? transcriptionTimeoutSeconds
@@ -329,7 +317,7 @@ struct AppSettings: Codable, Equatable {
         }
     }
 
-    func policy(for workflow: WorkflowID) -> WorkflowPolicy {
+    func policy(for workflow: String) -> WorkflowPolicy {
         workflows.first(where: { $0.id == workflow }) ?? WorkflowPolicy.defaults.first(where: { $0.id == workflow })!
     }
 }
@@ -339,13 +327,14 @@ extension WorkflowPolicy {
 
     static let defaults: [WorkflowPolicy] = [
         WorkflowPolicy(
-            id: .obsidianJournal,
+            id: StandardWorkflowID.obsidianJournal,
             name: "Obsidian Journal",
             isEnabled: true,
             sourceBehavior: .manualOnly,
             watchFolderPath: "\(NSHomeDirectory())/Library/Mobile Documents/iCloud~com~openplanetsoftware~just-press-record/Documents",
             destination: .obsidianJournal,
             destinationPath: "🖋️ Journal",
+            audioDestinationPath: "🖋️ Journal/Audio",
             transcriptBehavior: .appendToMonthlyNote,
             audioBehavior: .copyAudioToDestination,
             originalBehavior: .keepOriginal,
@@ -354,13 +343,14 @@ extension WorkflowPolicy {
             processingStoragePolicy: .deleteAfterSuccessfulExport
         ),
         WorkflowPolicy(
-            id: .obsidianInbox,
+            id: StandardWorkflowID.obsidianInbox,
             name: "Obsidian Inbox",
             isEnabled: true,
             sourceBehavior: .manualOnly,
             watchFolderPath: "",
             destination: .obsidianInbox,
             destinationPath: "📮INBOX/📻 VOICE INBOX",
+            audioDestinationPath: "",
             transcriptBehavior: .createMarkdownFile,
             audioBehavior: .doNotExportAudio,
             originalBehavior: .keepOriginal,
@@ -369,14 +359,15 @@ extension WorkflowPolicy {
             processingStoragePolicy: .deleteAfterSuccessfulExport
         ),
         WorkflowPolicy(
-            id: .projectFolder,
+            id: StandardWorkflowID.transcriptOnly,
             name: "Transcript Only",
             isEnabled: true,
             sourceBehavior: .manualOnly,
             watchFolderPath: "",
             destination: .projectFolder,
             destinationPath: "",
-            transcriptBehavior: .saveTranscriptOnly,
+            audioDestinationPath: "",
+            transcriptBehavior: .createMarkdownFile,
             audioBehavior: .doNotExportAudio,
             originalBehavior: .keepOriginal,
             reviewBehavior: .requireReview,
@@ -384,28 +375,14 @@ extension WorkflowPolicy {
             processingStoragePolicy: .deleteAfterSuccessfulExport
         ),
         WorkflowPolicy(
-            id: .fieldRecordingLibrary,
-            name: "Archive Folder",
-            isEnabled: false,
-            sourceBehavior: .manualOnly,
-            watchFolderPath: "",
-            destination: .archiveFolder,
-            destinationPath: "📦 Archive/Voice Memos",
-            transcriptBehavior: .createMarkdownFile,
-            audioBehavior: .copyAudioToDestination,
-            originalBehavior: .archiveOriginal,
-            reviewBehavior: .requireReviewWhenUncertain,
-            filenamePattern: "{yy}{MM}{dd}-{HH}{mm}_{location}_{slug}_{initials}",
-            processingStoragePolicy: .keepForSevenDays
-        ),
-        WorkflowPolicy(
-            id: .renameInPlace,
+            id: StandardWorkflowID.renameInPlace,
             name: "Rename in Place",
             isEnabled: true,
             sourceBehavior: .manualOnly,
             watchFolderPath: "",
             destination: .sameFolder,
             destinationPath: "",
+            audioDestinationPath: "",
             transcriptBehavior: .doNotExportTranscript,
             audioBehavior: .linkExistingAudio,
             originalBehavior: .renameOriginalInPlace,

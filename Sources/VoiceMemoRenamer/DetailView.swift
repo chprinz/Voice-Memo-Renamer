@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ImportDetailView: View {
     @EnvironmentObject private var store: ImportStore
+    @Environment(\.dismiss) private var dismiss
     @State private var selectedTab = "summary"
     @State private var showDetails = false
     var item: ImportItem
@@ -66,9 +67,19 @@ struct ImportDetailView: View {
 
             Spacer()
 
-            VStack(alignment: .trailing, spacing: 10) {
-                StatusPill(status: item.status)
-                primaryAction
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .trailing, spacing: 10) {
+                    StatusPill(status: item.status)
+                    primaryAction
+                }
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help("Close")
             }
         }
     }
@@ -181,7 +192,7 @@ struct ImportDetailView: View {
         }
     }
 
-    private var workflowBinding: Binding<WorkflowID> {
+    private var workflowBinding: Binding<String> {
         Binding {
             item.workflow
         } set: { workflow in
