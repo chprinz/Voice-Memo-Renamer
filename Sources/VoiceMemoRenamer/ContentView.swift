@@ -267,23 +267,68 @@ struct ImportListView: View {
     }
 
     private var supportedTypes: [UTType] {
-        [.audio, .mpeg4Audio, .mp3, .wav, .fileURL]
+        [.fileURL, .audio, .mpeg4Audio, .mp3, .wav, .aiff, .mpeg4Movie, .quickTimeMovie]
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
         for provider in providers {
-            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-                guard let data = item as? Data,
-                      let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
-                Task { @MainActor in
-                    if let imported = await store.addItem(from: url) {
-                        selectedItemID = imported.id
-                        ImportProcessor(store: store).process(imported.id)
-                    }
-                }
-            }
+            importDroppedProvider(provider)
         }
         return true
+    }
+
+    private func importDroppedProvider(_ provider: NSItemProvider) {
+        if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, error in
+                guard error == nil, let url = fileURL(from: item) else { return }
+                importAudioFile(url)
+            }
+            return
+        }
+
+        guard let type = supportedTypes.first(where: { provider.hasItemConformingToTypeIdentifier($0.identifier) }) else {
+            return
+        }
+        provider.loadFileRepresentation(forTypeIdentifier: type.identifier) { temporaryURL, error in
+            guard error == nil, let temporaryURL else { return }
+            let destinationURL = AppPaths.dropImportDirectory
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension(temporaryURL.pathExtension.isEmpty ? "m4a" : temporaryURL.pathExtension)
+            do {
+                try FileManager.default.createDirectory(at: AppPaths.dropImportDirectory, withIntermediateDirectories: true)
+                try? FileManager.default.removeItem(at: destinationURL)
+                try FileManager.default.copyItem(at: temporaryURL, to: destinationURL)
+                importAudioFile(destinationURL)
+            } catch {
+                return
+            }
+        }
+    }
+
+    private func importAudioFile(_ url: URL) {
+        Task { @MainActor in
+            if let imported = await store.addItem(from: url) {
+                selectedItemID = imported.id
+                ImportProcessor(store: store).process(imported.id)
+            }
+        }
+    }
+
+    private func fileURL(from item: NSSecureCoding?) -> URL? {
+        if let url = item as? URL {
+            return url
+        }
+        if let data = item as? Data {
+            return URL(dataRepresentation: data, relativeTo: nil)
+        }
+        if let string = item as? String {
+            return URL(string: string) ?? URL(fileURLWithPath: string)
+        }
+        if let nsString = item as? NSString {
+            let string = nsString as String
+            return URL(string: string) ?? URL(fileURLWithPath: string)
+        }
+        return nil
     }
 
     private func chooseAudioFiles() {

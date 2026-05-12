@@ -60,20 +60,34 @@ struct LMStudioService {
         let body: [String: Any] = [
             "model": model,
             "messages": [
-                ["role": "system", "content": "You analyze personal voice memo transcripts. Output only valid JSON."],
+                ["role": "system", "content": "You analyze personal voice memo transcripts. Return the final answer as valid JSON in the message content. Do not include markdown or explanations."],
                 ["role": "user", "content": prompt]
             ],
             "temperature": 0.2,
-            "max_tokens": 900,
+            "max_tokens": 1_800,
+            "response_format": ["type": "json_object"],
             "stream": false
         ]
         let data = try JSONSerialization.data(withJSONObject: body)
-        let responseData = try await post(path: "chat/completions", body: data, timeout: 90)
+        let responseData = try await post(path: "chat/completions", body: data, timeout: 120)
         let response = try JSONDecoder().decode(ChatCompletionResponse.self, from: responseData)
-        guard let content = response.choices.first?.message.content else {
+        guard let choice = response.choices.first else {
             throw ProcessingFailure(message: "LM Studio returned no analysis.", details: String(data: responseData, encoding: .utf8) ?? "")
         }
-        return try parseAnalysis(from: content)
+        let content = choice.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reasoningContent = choice.message.reasoningContent?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let analysisText = content.isEmpty ? reasoningContent : content
+        do {
+            return try parseAnalysis(from: analysisText)
+        } catch {
+            if choice.finishReason == "length" {
+                throw ProcessingFailure(
+                    message: "LM Studio response was cut off before valid JSON.",
+                    details: "The selected model used the available output tokens before completing JSON. Try a non-reasoning model, increase the model context/output limit in LM Studio, or shorten the transcript. Raw response: \(String(data: responseData, encoding: .utf8) ?? analysisText)"
+                )
+            }
+            throw error
+        }
     }
 
     private func loadedModel() async throws -> String {
@@ -102,6 +116,7 @@ struct LMStudioService {
 
         Regeln:
         - Antworte nur mit einem JSON-Objekt.
+        - Schreibe kein Markdown, keine Analyse und keine Gedankenschritte.
         - Deutsch.
         - title: klarer natürlicher Titel, nicht generisch.
         - slug: ausführlich und beschreibend, 5-12 Wörter falls sinnvoll, klein, bindestriche, keine Umlaute.
@@ -176,7 +191,12 @@ struct LMStudioService {
         }
         let json = String(content[start...end])
         let data = Data(json.utf8)
-        let decoded = try JSONDecoder().decode(AnalysisResponse.self, from: data)
+        let decoded: AnalysisResponse
+        do {
+            decoded = try JSONDecoder().decode(AnalysisResponse.self, from: data)
+        } catch {
+            throw ProcessingFailure(message: "LM Studio returned invalid JSON.", details: "\(error.localizedDescription)\n\n\(json)")
+        }
         let slug = decoded.slug.slugSafe
         let shortSlug = (decoded.shortSlug?.slugSafe.isEmpty == false ? decoded.shortSlug!.slugSafe : slug.split(separator: "-").prefix(3).joined(separator: "-"))
         return AnalysisMetadata(
@@ -443,8 +463,23 @@ private struct LMStudioNativeModelsResponse: Decodable {
 
 private struct ChatCompletionResponse: Decodable {
     struct Choice: Decodable {
-        struct Message: Decodable { var content: String }
+        struct Message: Decodable {
+            var content: String
+            var reasoningContent: String?
+
+            enum CodingKeys: String, CodingKey {
+                case content
+                case reasoningContent = "reasoning_content"
+            }
+        }
+
         var message: Message
+        var finishReason: String?
+
+        enum CodingKeys: String, CodingKey {
+            case message
+            case finishReason = "finish_reason"
+        }
     }
     var choices: [Choice]
 }

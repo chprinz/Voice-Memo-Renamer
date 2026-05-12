@@ -19,6 +19,12 @@ final class ImportStore: ObservableObject {
 
     func addItem(from sourceURL: URL) async -> ImportItem? {
         guard sourceURL.isFileURL else { return nil }
+        let didAccessSecurityScopedResource = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if didAccessSecurityScopedResource {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
         let (recordingDate, certain) = AudioInspector.recordingDate(for: sourceURL)
         let duration = await AudioInspector.duration(for: sourceURL)
         let managedURL = uniqueManagedAudioURL(for: sourceURL, recordingDate: recordingDate)
@@ -77,6 +83,7 @@ final class ImportStore: ObservableObject {
     private func ensureDirectories() {
         try? FileManager.default.createDirectory(at: AppPaths.applicationSupport, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: AppPaths.managedAudioDirectory, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: AppPaths.dropImportDirectory, withIntermediateDirectories: true)
     }
 
     private func uniqueManagedAudioURL(for sourceURL: URL, recordingDate: Date) -> URL {
