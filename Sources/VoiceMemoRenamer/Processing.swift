@@ -257,69 +257,176 @@ struct ObsidianJournalExporter {
     var settings: AppSettings
 
     func export(_ item: ImportItem) throws -> ImportItem {
-        guard item.workflow == .obsidianJournal else {
-            throw ProcessingFailure(message: "Workflow is not implemented yet.", details: item.workflow.label)
-        }
         guard let managedAudioPath = item.managedAudioPath else {
             throw ProcessingFailure(message: "No managed audio file is available.", details: item.originalPath)
         }
 
+        let policy = settings.policy(for: item.workflow)
         let vaultRoot = URL(fileURLWithPath: settings.vaultRootPath)
-        let audioDirectory = vaultRoot.appendingPathComponent(settings.journalAudioRelativePath, isDirectory: true)
-        let monthlyDirectory = vaultRoot.appendingPathComponent(settings.monthlyNotesRelativePath, isDirectory: true)
-        try FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: monthlyDirectory, withIntermediateDirectories: true)
-
         let sourceAudioURL = URL(fileURLWithPath: managedAudioPath)
-        let datePart = DateFormatter.filenameDate.string(from: item.recordingDate)
-        let slug = item.analysis?.shortSlug ?? item.analysis?.slug ?? sourceAudioURL.deletingPathExtension().lastPathComponent.slugSafe
-        let audioFilename = "\(datePart)_\(slug)_memo.\(sourceAudioURL.pathExtension.isEmpty ? "m4a" : sourceAudioURL.pathExtension)"
-        let destinationAudioURL = uniqueURL(in: audioDirectory, filename: audioFilename)
-        try FileManager.default.copyItem(at: sourceAudioURL, to: destinationAudioURL)
+        let generatedFilename = FilenamePattern.render(pattern: policy.filenamePattern, item: item, workflowName: policy.name)
+        var updated = item
+        var exportedAudioURL: URL?
 
-        let monthlyURL = monthlyDirectory.appendingPathComponent("\(DateFormatter.monthlyNote.string(from: item.recordingDate)).md")
-        let entry = markdownEntry(for: item, audioFilename: destinationAudioURL.lastPathComponent)
-        if FileManager.default.fileExists(atPath: monthlyURL.path) {
-            let handle = try FileHandle(forWritingTo: monthlyURL)
-            try handle.seekToEnd()
-            try handle.write(contentsOf: Data(("\n\n" + entry).utf8))
-            try handle.close()
-        } else {
-            try Data((entry + "\n").utf8).write(to: monthlyURL, options: [.atomic])
+        if policy.audioBehavior == .copyAudioToDestination || policy.audioBehavior == .moveAudioToDestination {
+            let audioDirectory = audioDestinationDirectory(for: policy, vaultRoot: vaultRoot, item: item)
+            try FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
+            let destinationAudioURL = uniqueURL(in: audioDirectory, filename: generatedFilename)
+            if policy.audioBehavior == .moveAudioToDestination {
+                try FileManager.default.moveItem(at: sourceAudioURL, to: destinationAudioURL)
+                updated.managedAudioPath = nil
+            } else {
+                try FileManager.default.copyItem(at: sourceAudioURL, to: destinationAudioURL)
+            }
+            exportedAudioURL = destinationAudioURL
+            updated.fileOperations.append(FileOperationRecord(
+                kind: policy.audioBehavior == .moveAudioToDestination ? "move" : "copy",
+                sourcePath: sourceAudioURL.path,
+                destinationPath: destinationAudioURL.path,
+                occurredAt: Date()
+            ))
         }
 
-        var updated = item
+        if policy.originalBehavior == .renameOriginalInPlace {
+            let originalURL = URL(fileURLWithPath: item.originalPath)
+            let destinationURL = uniqueURL(in: originalURL.deletingLastPathComponent(), filename: generatedFilename)
+            try FileManager.default.moveItem(at: originalURL, to: destinationURL)
+            updated.originalPath = destinationURL.path
+            updated.originalFilename = destinationURL.lastPathComponent
+            updated.fileOperations.append(FileOperationRecord(
+                kind: "rename_original",
+                sourcePath: originalURL.path,
+                destinationPath: destinationURL.path,
+                occurredAt: Date()
+            ))
+        }
+
+        if let markdownURL = try exportTranscriptIfNeeded(
+            item: updated,
+            policy: policy,
+            vaultRoot: vaultRoot,
+            audioFilename: exportedAudioURL?.lastPathComponent
+        ) {
+            updated.exportedMarkdownPath = markdownURL.path
+            updated.fileOperations.append(FileOperationRecord(
+                kind: policy.transcriptBehavior == .appendToMonthlyNote ? "append" : "write",
+                sourcePath: markdownURL.path,
+                destinationPath: markdownURL.path,
+                occurredAt: Date()
+            ))
+        }
+
         updated.status = .imported
         updated.importedAt = Date()
-        updated.exportedMarkdownPath = monthlyURL.path
-        updated.fileOperations.append(FileOperationRecord(
-            kind: "copy",
-            sourcePath: sourceAudioURL.path,
-            destinationPath: destinationAudioURL.path,
-            occurredAt: Date()
-        ))
-        updated.fileOperations.append(FileOperationRecord(
-            kind: "append",
-            sourcePath: monthlyURL.path,
-            destinationPath: monthlyURL.path,
-            occurredAt: Date()
-        ))
+        updated = cleanProcessingCopyIfNeeded(updated, policy: policy)
         return updated
     }
 
-    private func markdownEntry(for item: ImportItem, audioFilename: String) -> String {
+    private func audioDestinationDirectory(for policy: WorkflowPolicy, vaultRoot: URL, item: ImportItem) -> URL {
+        switch policy.destination {
+        case .obsidianJournal:
+            return vaultRoot.appendingPathComponent(settings.journalAudioRelativePath, isDirectory: true)
+        case .obsidianInbox:
+            return vaultRoot.appendingPathComponent(settings.voiceInboxRelativePath, isDirectory: true)
+        case .projectFolder:
+            return policy.destinationPath.isEmpty
+                ? URL(fileURLWithPath: item.originalPath).deletingLastPathComponent()
+                : URL(fileURLWithPath: NSString(string: policy.destinationPath).expandingTildeInPath, isDirectory: true)
+        case .sameFolder:
+            return URL(fileURLWithPath: item.originalPath).deletingLastPathComponent()
+        case .archiveFolder:
+            return vaultRoot.appendingPathComponent(settings.archiveRelativePath, isDirectory: true)
+        }
+    }
+
+    private func transcriptDestinationDirectory(for policy: WorkflowPolicy, vaultRoot: URL, item: ImportItem) -> URL {
+        switch policy.destination {
+        case .obsidianJournal:
+            return vaultRoot.appendingPathComponent(settings.monthlyNotesRelativePath, isDirectory: true)
+        case .obsidianInbox:
+            return vaultRoot.appendingPathComponent(settings.voiceInboxRelativePath, isDirectory: true)
+        case .projectFolder:
+            return policy.destinationPath.isEmpty
+                ? URL(fileURLWithPath: item.originalPath).deletingLastPathComponent()
+                : URL(fileURLWithPath: NSString(string: policy.destinationPath).expandingTildeInPath, isDirectory: true)
+        case .sameFolder:
+            return URL(fileURLWithPath: item.originalPath).deletingLastPathComponent()
+        case .archiveFolder:
+            return vaultRoot.appendingPathComponent(settings.archiveRelativePath, isDirectory: true)
+        }
+    }
+
+    private func exportTranscriptIfNeeded(item: ImportItem, policy: WorkflowPolicy, vaultRoot: URL, audioFilename: String?) throws -> URL? {
+        switch policy.transcriptBehavior {
+        case .appendToMonthlyNote:
+            let monthlyDirectory = vaultRoot.appendingPathComponent(settings.monthlyNotesRelativePath, isDirectory: true)
+            try FileManager.default.createDirectory(at: monthlyDirectory, withIntermediateDirectories: true)
+            let monthlyURL = monthlyDirectory.appendingPathComponent("\(DateFormatter.monthlyNote.string(from: item.recordingDate)).md")
+            let entry = markdownEntry(for: item, audioFilename: audioFilename)
+            if FileManager.default.fileExists(atPath: monthlyURL.path) {
+                let handle = try FileHandle(forWritingTo: monthlyURL)
+                try handle.seekToEnd()
+                try handle.write(contentsOf: Data(("\n\n" + entry).utf8))
+                try handle.close()
+            } else {
+                try Data((entry + "\n").utf8).write(to: monthlyURL, options: [.atomic])
+            }
+            return monthlyURL
+        case .createMarkdownFile, .saveTranscriptOnly:
+            let directory = transcriptDestinationDirectory(for: policy, vaultRoot: vaultRoot, item: item)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let base = FilenamePattern.render(pattern: policy.filenamePattern, item: item, workflowName: policy.name, includeExtension: false)
+            let markdownURL = uniqueURL(in: directory, filename: "\(base).md")
+            try Data(markdownDocument(for: item, audioFilename: audioFilename).utf8).write(to: markdownURL, options: [.atomic])
+            return markdownURL
+        case .doNotExportTranscript:
+            return nil
+        }
+    }
+
+    private func markdownEntry(for item: ImportItem, audioFilename: String?) -> String {
         let title = item.analysis?.title ?? item.displayTitle
         let summary = item.analysis?.summary ?? ""
         let transcript = item.transcript ?? ""
+        let embed = audioFilename.map { "![[\($0)]]\n" } ?? ""
         return """
         ## \(DateFormatter.itemDate.string(from: item.recordingDate))
-        ![[\(audioFilename)]]
-        **\(title)**
+        \(embed)**\(title)**
 
         \(summary)
 
         \(transcript)
         """
+    }
+
+    private func markdownDocument(for item: ImportItem, audioFilename: String?) -> String {
+        let title = item.analysis?.title ?? item.displayTitle
+        let summary = item.analysis?.summary ?? ""
+        let transcript = item.transcript ?? ""
+        let embed = audioFilename.map { "![[\($0)]]\n\n" } ?? ""
+        return """
+        # \(title)
+
+        \(summary)
+
+        \(embed)\(transcript)
+        """
+    }
+
+    private func cleanProcessingCopyIfNeeded(_ item: ImportItem, policy: WorkflowPolicy) -> ImportItem {
+        var updated = item
+        guard policy.processingStoragePolicy == .deleteAfterSuccessfulExport, let managedAudioPath = updated.managedAudioPath else {
+            return updated
+        }
+        try? FileManager.default.removeItem(atPath: managedAudioPath)
+        updated.managedAudioPath = nil
+        updated.fileOperations.append(FileOperationRecord(
+            kind: "delete_processing_copy",
+            sourcePath: managedAudioPath,
+            destinationPath: "",
+            occurredAt: Date()
+        ))
+        return updated
     }
 
     private func uniqueURL(in directory: URL, filename: String) -> URL {
@@ -384,6 +491,9 @@ final class ImportProcessor {
                 }
                 item.status = .readyForReview
                 store.update(item)
+                if shouldAutoExport(item) {
+                    export(id)
+                }
             } catch {
                 item = store.item(id: id) ?? item
                 item.retryCount += 1
@@ -416,6 +526,19 @@ final class ImportProcessor {
                 occurredAt: Date()
             )
             store.update(item)
+        }
+    }
+
+    private func shouldAutoExport(_ item: ImportItem) -> Bool {
+        let policy = store.workflowPolicy(for: item.workflow)
+        switch policy.reviewBehavior {
+        case .autoExportWhenReady:
+            return true
+        case .requireReview:
+            return false
+        case .requireReviewWhenUncertain:
+            let titleIsMissing = item.analysis?.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
+            return item.recordingDateIsCertain && !titleIsMissing
         }
     }
 }

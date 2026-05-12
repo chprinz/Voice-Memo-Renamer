@@ -15,6 +15,7 @@ final class ImportStore: ObservableObject {
         ensureDirectories()
         loadSettings()
         loadItems()
+        Task { await scanWatchFolders() }
     }
 
     func addItem(from sourceURL: URL) async -> ImportItem? {
@@ -38,7 +39,7 @@ final class ImportStore: ObservableObject {
                 recordingDate: recordingDate,
                 recordingDateIsCertain: certain,
                 durationSeconds: duration,
-                workflow: settings.defaultWorkflow,
+                workflow: workflowForSource(sourceURL),
                 status: .queued
             )
             item.fileOperations.append(FileOperationRecord(
@@ -80,6 +81,68 @@ final class ImportStore: ObservableObject {
         items.first(where: { $0.id == id })
     }
 
+    func workflowPolicy(for workflow: WorkflowID) -> WorkflowPolicy {
+        settings.policy(for: workflow)
+    }
+
+    func setDefaultWorkflow(_ workflow: WorkflowID) {
+        settings.defaultWorkflow = workflow
+    }
+
+    func updateWorkflow(_ policy: WorkflowPolicy) {
+        if let index = settings.workflows.firstIndex(where: { $0.id == policy.id }) {
+            settings.workflows[index] = policy
+        } else {
+            settings.workflows.append(policy)
+        }
+        if policy.isEnabled, policy.id == settings.defaultWorkflow {
+            settings.processingStoragePolicy = policy.processingStoragePolicy
+        }
+    }
+
+    func scanWatchFolders() async {
+        let policies = settings.workflows.filter(\.usesWatchFolder)
+        guard !policies.isEmpty else { return }
+        for policy in policies {
+            let folder = URL(fileURLWithPath: NSString(string: policy.watchFolderPath).expandingTildeInPath)
+            guard let enumerator = FileManager.default.enumerator(
+                at: folder,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            let urls = enumerator.compactMap { $0 as? URL }
+            for url in urls {
+                guard Self.supportedAudioExtensions.contains(url.pathExtension.lowercased()) else { continue }
+                guard !items.contains(where: { $0.originalPath == url.path }) else { continue }
+                if var imported = await addItem(from: url) {
+                    imported.workflow = policy.id
+                    update(imported)
+                    ImportProcessor(store: self).process(imported.id)
+                }
+            }
+        }
+    }
+
+    func appStorageUsage() -> Int64 {
+        directorySize(AppPaths.managedAudioDirectory) + directorySize(AppPaths.dropImportDirectory)
+    }
+
+    func cleanCompletedFiles() {
+        for item in items where item.status == .imported {
+            guard let path = item.managedAudioPath else { continue }
+            try? FileManager.default.removeItem(atPath: path)
+            var updated = item
+            updated.managedAudioPath = nil
+            updated.fileOperations.append(FileOperationRecord(
+                kind: "delete_processing_copy",
+                sourcePath: path,
+                destinationPath: "",
+                occurredAt: Date()
+            ))
+            update(updated)
+        }
+    }
+
     private func ensureDirectories() {
         try? FileManager.default.createDirectory(at: AppPaths.applicationSupport, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: AppPaths.managedAudioDirectory, withIntermediateDirectories: true)
@@ -97,6 +160,30 @@ final class ImportStore: ObservableObject {
         }
         return candidate
     }
+
+    private func workflowForSource(_ sourceURL: URL) -> WorkflowID {
+        settings.workflows.first { policy in
+            policy.usesWatchFolder && sourceURL.path.hasPrefix(NSString(string: policy.watchFolderPath).expandingTildeInPath)
+        }?.id ?? settings.defaultWorkflow
+    }
+
+    private func directorySize(_ url: URL) -> Int64 {
+        guard let enumerator = FileManager.default.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else { return 0 }
+        var total: Int64 = 0
+        for case let fileURL as URL in enumerator {
+            let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            if values?.isRegularFile == true {
+                total += Int64(values?.fileSize ?? 0)
+            }
+        }
+        return total
+    }
+
+    private static let supportedAudioExtensions = Set(["m4a", "mp3", "wav", "aiff", "aif", "caf", "mp4", "mov"])
 
     private func loadItems() {
         guard let data = try? Data(contentsOf: AppPaths.storeURL) else { return }

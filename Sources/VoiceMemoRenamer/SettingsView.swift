@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var store: ImportStore
+    @State private var selectedWorkflowID: WorkflowID = .obsidianJournal
     @State private var macWhisperStatus: String = "Not checked"
     @State private var isChecking = false
     @State private var lmStudioModels: [String] = []
@@ -14,106 +15,164 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 0) {
             Text("Settings")
                 .font(.title2.weight(.semibold))
-                .padding(.horizontal, 24)
+                .padding(.horizontal, 28)
                 .padding(.top, 24)
-                .padding(.bottom, 12)
+                .padding(.bottom, 10)
 
             ScrollView {
                 Form {
-                    Section("Workflow") {
-                        Picker("Default workflow", selection: $store.settings.defaultWorkflow) {
-                            ForEach(WorkflowID.allCases) { workflow in
-                                Text(workflow.label).tag(workflow)
-                            }
-                        }
-                    }
-
-                    Section("MacWhisper") {
-                        TextField("CLI path", text: $store.settings.macWhisperPath)
-                        HStack {
-                            Text(macWhisperStatus)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                            Spacer()
-                            Button(isChecking ? "Checking..." : "Check") {
-                                checkMacWhisper()
-                            }
-                            .disabled(isChecking)
-                        }
-                    }
-
-                    Section("LM Studio") {
-                        TextField("Base URL", text: $store.settings.lmStudioBaseURL)
-                        Picker("Model", selection: modelSelectionBinding) {
-                            Text("First loaded model").tag("")
-                            ForEach(lmStudioModels, id: \.self) { model in
-                                Text(model).tag(model)
-                            }
-                        }
-                        HStack {
-                            Text(lmStudioStatus)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                            Spacer()
-                            Button(isLoadingModels ? "Loading..." : "Refresh Models") {
-                                refreshModels()
-                            }
-                            .disabled(isLoadingModels)
-                        }
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text("Analysis transcript limit")
-                                    .font(.caption.weight(.medium))
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                                if loadedContextTokens != nil {
-                                    Button("Use Safe Limit") {
-                                        applySafeTranscriptLimit()
-                                    }
-                                    .buttonStyle(.borderless)
-                                }
-                            }
-                            Text(contextSummary)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            HStack {
-                                TextField(
-                                    "Transcript limit",
-                                    value: $store.settings.maxTranscriptCharactersForAnalysis,
-                                    format: .number
-                                )
-                                .frame(width: 180)
-                                Text("characters")
-                                    .foregroundStyle(.secondary)
-                            }
-                            Slider(
-                                value: transcriptLimitBinding,
-                                in: 6000...transcriptSliderUpperBound,
-                                step: 1000
-                            )
-                            Text("Longer transcripts are trimmed to start, middle, and end before analysis so LM Studio does not receive an oversized prompt.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    Section("Obsidian") {
-                        TextField("Vault root", text: $store.settings.vaultRootPath)
-                        TextField("Voice Inbox", text: $store.settings.voiceInboxRelativePath)
-                        TextField("Journal audio", text: $store.settings.journalAudioRelativePath)
-                        TextField("Monthly notes", text: $store.settings.monthlyNotesRelativePath)
-                    }
+                    generalSection
+                    workflowsSection
+                    sourcesSection
+                    storageSection
+                    servicesSection
                 }
                 .formStyle(.grouped)
-                .frame(maxWidth: 760, alignment: .leading)
+                .frame(maxWidth: 860, alignment: .leading)
                 .padding(.horizontal, 24)
-                .padding(.bottom, 24)
+                .padding(.bottom, 28)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(nsColor: .textBackgroundColor))
         .onAppear {
+            selectedWorkflowID = store.settings.defaultWorkflow
             refreshModels()
+        }
+    }
+
+    private var generalSection: some View {
+        Section("General") {
+            Picker("Default workflow", selection: $store.settings.defaultWorkflow) {
+                ForEach(store.settings.workflows.filter(\.isEnabled)) { workflow in
+                    Text(workflow.name).tag(workflow.id)
+                }
+            }
+        }
+    }
+
+    private var workflowsSection: some View {
+        Section("Workflows") {
+            Picker("Workflow", selection: $selectedWorkflowID) {
+                ForEach(store.settings.workflows) { workflow in
+                    Text(workflow.name).tag(workflow.id)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            if let binding = workflowBinding(for: selectedWorkflowID) {
+                WorkflowPolicyEditor(policy: binding, isDefault: store.settings.defaultWorkflow == selectedWorkflowID) {
+                    store.settings.defaultWorkflow = selectedWorkflowID
+                }
+            }
+        }
+    }
+
+    private var sourcesSection: some View {
+        Section("Sources / Watch Folders") {
+            TextField("JPR watch folder", text: $store.settings.jprWatchFolderPath)
+            Button {
+                Task { await store.scanWatchFolders() }
+            } label: {
+                Label("Check Watch Folders Now", systemImage: "arrow.clockwise")
+            }
+        }
+    }
+
+    private var storageSection: some View {
+        Section("Storage") {
+            Picker("Processing copies", selection: $store.settings.processingStoragePolicy) {
+                ForEach(ProcessingStoragePolicy.allCases) { policy in
+                    Text(policy.label).tag(policy)
+                }
+            }
+            HStack {
+                Text("Current app storage")
+                Spacer()
+                Text(FileSizeFormatter.storageText(bytes: store.appStorageUsage()))
+                    .foregroundStyle(.secondary)
+            }
+            Button("Clean Completed Files") {
+                store.cleanCompletedFiles()
+            }
+        }
+    }
+
+    private var servicesSection: some View {
+        Section("Services") {
+            TextField("MacWhisper CLI path", text: $store.settings.macWhisperPath)
+            HStack {
+                Text(macWhisperStatus)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                Spacer()
+                Button(isChecking ? "Checking..." : "Check") {
+                    checkMacWhisper()
+                }
+                .disabled(isChecking)
+            }
+
+            Divider()
+
+            TextField("LM Studio base URL", text: $store.settings.lmStudioBaseURL)
+            Picker("Model", selection: modelSelectionBinding) {
+                Text("First loaded model").tag("")
+                ForEach(lmStudioModels, id: \.self) { model in
+                    Text(model).tag(model)
+                }
+            }
+            HStack {
+                Text(lmStudioStatus)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                Spacer()
+                Button(isLoadingModels ? "Loading..." : "Refresh Models") {
+                    refreshModels()
+                }
+                .disabled(isLoadingModels)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Analysis transcript limit")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if loadedContextTokens != nil {
+                        Button("Use Safe Limit") {
+                            applySafeTranscriptLimit()
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+                Text(contextSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    TextField(
+                        "Transcript limit",
+                        value: $store.settings.maxTranscriptCharactersForAnalysis,
+                        format: .number
+                    )
+                    .frame(width: 180)
+                    Text("characters")
+                        .foregroundStyle(.secondary)
+                }
+                Slider(
+                    value: transcriptLimitBinding,
+                    in: 6000...transcriptSliderUpperBound,
+                    step: 1000
+                )
+            }
+        }
+    }
+
+    private func workflowBinding(for id: WorkflowID) -> Binding<WorkflowPolicy>? {
+        guard let index = store.settings.workflows.firstIndex(where: { $0.id == id }) else {
+            return nil
+        }
+        return Binding {
+            store.settings.workflows[index]
+        } set: { policy in
+            store.updateWorkflow(policy)
         }
     }
 
@@ -266,6 +325,101 @@ struct SettingsView: View {
         return openAIBaseURL
             .appendingPathComponent("api")
             .appendingPathComponent("v1")
+    }
+}
+
+struct WorkflowPolicyEditor: View {
+    @Binding var policy: WorkflowPolicy
+    var isDefault: Bool
+    var makeDefault: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            TextField("Name", text: $policy.name)
+            Toggle("Enabled", isOn: $policy.isEnabled)
+            Toggle("Default workflow", isOn: defaultBinding)
+            Picker("Source behavior", selection: $policy.sourceBehavior) {
+                ForEach(SourceBehavior.allCases) { behavior in
+                    Text(behavior.label).tag(behavior)
+                }
+            }
+            if policy.sourceBehavior.usesWatchFolder {
+                TextField("Watch folder path", text: $policy.watchFolderPath)
+            }
+            Picker("Destination", selection: $policy.destination) {
+                ForEach(WorkflowDestination.allCases) { destination in
+                    Text(destination.label).tag(destination)
+                }
+            }
+            TextField("Destination path", text: $policy.destinationPath)
+            Picker("Transcript", selection: $policy.transcriptBehavior) {
+                ForEach(TranscriptBehavior.allCases) { behavior in
+                    Text(behavior.label).tag(behavior)
+                }
+            }
+            Picker("Audio", selection: $policy.audioBehavior) {
+                ForEach(AudioBehavior.allCases) { behavior in
+                    Text(behavior.label).tag(behavior)
+                }
+            }
+            Picker("Original", selection: $policy.originalBehavior) {
+                ForEach(OriginalBehavior.allCases) { behavior in
+                    Text(behavior.label).tag(behavior)
+                }
+            }
+            Picker("Review", selection: $policy.reviewBehavior) {
+                ForEach(ReviewBehavior.allCases) { behavior in
+                    Text(behavior.label).tag(behavior)
+                }
+            }
+            Picker("Processing copy", selection: $policy.processingStoragePolicy) {
+                ForEach(ProcessingStoragePolicy.allCases) { behavior in
+                    Text(behavior.label).tag(behavior)
+                }
+            }
+            TextField("Filename pattern", text: $policy.filenamePattern)
+            HStack {
+                Text(FilenamePattern.preview(pattern: policy.filenamePattern, workflowName: policy.name))
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                Spacer()
+                PopoverHelp()
+            }
+        }
+    }
+
+    private var defaultBinding: Binding<Bool> {
+        Binding {
+            isDefault
+        } set: { isOn in
+            if isOn {
+                makeDefault()
+            }
+        }
+    }
+}
+
+struct PopoverHelp: View {
+    @State private var showingHelp = false
+
+    var body: some View {
+        Button {
+            showingHelp.toggle()
+        } label: {
+            Image(systemName: "questionmark.circle")
+        }
+        .buttonStyle(.borderless)
+        .popover(isPresented: $showingHelp) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Placeholders")
+                    .font(.headline)
+                Text(FilenamePattern.placeholders.joined(separator: "\n"))
+                    .font(.caption.monospaced())
+                    .textSelection(.enabled)
+            }
+            .padding(16)
+            .frame(width: 260)
+        }
     }
 }
 

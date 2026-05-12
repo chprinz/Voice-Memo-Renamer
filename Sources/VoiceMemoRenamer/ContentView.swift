@@ -1,267 +1,193 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-enum NavigationSection: String, CaseIterable, Identifiable {
-    case toReview
-    case imported
+enum QueueFilter: String, CaseIterable, Identifiable {
+    case all
+    case active
+    case review
     case attention
-    case settings
+    case imported
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
-        case .toReview: "To Review"
-        case .imported: "Imported"
+        case .all: "All"
+        case .active: "Active"
+        case .review: "Review"
         case .attention: "Attention"
-        case .settings: "Settings"
+        case .imported: "Imported"
+        }
+    }
+}
+
+enum ConnectivityState {
+    case ok
+    case unknown
+    case unavailable(String)
+
+    var color: Color {
+        switch self {
+        case .ok: .green
+        case .unknown: .secondary
+        case .unavailable: .red
         }
     }
 
-    var icon: String {
+    var tooltip: String {
         switch self {
-        case .toReview: "tray.full"
-        case .imported: "checkmark.circle"
-        case .attention: "exclamationmark.triangle"
-        case .settings: "gearshape"
+        case .ok: "Connected"
+        case .unknown: "Status unknown"
+        case .unavailable(let message): message
         }
     }
 }
 
 struct ContentView: View {
     @EnvironmentObject private var store: ImportStore
-    @State private var selection: NavigationSection = .toReview
-    @State private var selectedItemID: ImportItem.ID?
+    @State private var filter: QueueFilter = .all
+    @State private var inspectedItemID: ImportItem.ID?
+    @State private var showingSettings = false
+    @State private var isTargeted = false
+    @State private var macWhisperState: ConnectivityState = .unknown
+    @State private var lmStudioState: ConnectivityState = .unknown
 
     var body: some View {
-        HStack(spacing: 0) {
-            SidebarView(selection: $selection, count: count(for:))
-                .frame(width: 210)
-
+        VStack(spacing: 0) {
+            header
+            filterBar
             Divider()
-
-            mainContent
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            queue
         }
         .background(Color(nsColor: .windowBackgroundColor))
-        .onChange(of: selection) { _ in
-            syncSelection()
+        .onDrop(of: supportedTypes, isTargeted: $isTargeted) { providers in
+            handleDrop(providers)
         }
-        .onAppear {
-            syncSelection()
+        .sheet(item: inspectedItemBinding) { item in
+            ImportDetailView(item: item)
+                .environmentObject(store)
+                .frame(minWidth: 720, idealWidth: 800, minHeight: 620, idealHeight: 700)
         }
-        .onChange(of: store.items.map(\.id)) { _ in
-            syncSelection()
+        .sheet(isPresented: $showingSettings) {
+            SettingsView()
+                .environmentObject(store)
+                .frame(minWidth: 860, idealWidth: 980, minHeight: 680, idealHeight: 760)
+        }
+        .task {
+            await refreshConnectivity()
         }
     }
 
-    @ViewBuilder
-    private var mainContent: some View {
-        if selection == .settings {
-            SettingsView()
-        } else {
-            if let selectedItemID, let item = store.item(id: selectedItemID) {
-                HSplitView {
-                    ImportListView(
-                        title: selection.label,
-                        showsImportHeader: selection == .toReview,
-                        emptyMessage: emptyMessage,
-                        items: filteredItems,
-                        selectedItemID: $selectedItemID
-                    )
-                    .frame(minWidth: 360, idealWidth: 430, maxWidth: 520)
+    private var header: some View {
+        HStack(spacing: 12) {
+            Text("Voice Memo Renamer")
+                .font(.headline)
 
-                    ImportDetailView(item: item)
-                        .frame(minWidth: 520)
+            Picker("Default Workflow", selection: defaultWorkflowBinding) {
+                ForEach(store.settings.workflows.filter(\.isEnabled)) { workflow in
+                    Text(workflow.name).tag(workflow.id)
                 }
+            }
+            .labelsHidden()
+            .frame(width: 210)
+
+            Button {
+                chooseAudioFiles()
+            } label: {
+                Label("Choose Audio", systemImage: "waveform.badge.plus")
+            }
+            .buttonStyle(.borderedProminent)
+
+            Button {
+                showingSettings = true
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .buttonStyle(.borderless)
+            .help("Settings")
+
+            Spacer()
+
+            ConnectivityIcon(systemName: "waveform.path.ecg", state: macWhisperState)
+                .help("MacWhisper CLI: \(macWhisperState.tooltip)")
+            ConnectivityIcon(systemName: "brain.head.profile", state: lmStudioState)
+                .help("LM Studio: \(lmStudioState.tooltip)")
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+    }
+
+    private var filterBar: some View {
+        HStack {
+            Picker("Filter", selection: $filter) {
+                ForEach(QueueFilter.allCases) { filter in
+                    Text(filter.label).tag(filter)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 430)
+
+            Spacer()
+        }
+        .padding(.horizontal, 20)
+        .padding(.bottom, 12)
+    }
+
+    private var queue: some View {
+        Group {
+            if filteredItems.isEmpty {
+                EmptyQueueState(isTargeted: isTargeted)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ImportListView(
-                    title: selection.label,
-                    showsImportHeader: selection == .toReview,
-                    emptyMessage: emptyMessage,
-                    items: filteredItems,
-                    selectedItemID: $selectedItemID
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                List(filteredItems) { item in
+                    QueueRow(
+                        item: item,
+                        policy: store.workflowPolicy(for: item.workflow),
+                        action: { handlePrimaryAction(item) }
+                    )
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        inspectedItemID = item.id
+                    }
+                    .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
+                }
+                .listStyle(.inset)
+                .scrollContentBackground(.hidden)
             }
         }
+        .background(isTargeted ? Color.accentColor.opacity(0.08) : Color.clear)
     }
 
-    private var emptyMessage: String {
-        switch selection {
-        case .toReview:
-            "Drop or choose an audio file to begin."
-        case .imported:
-            "Imported memos will appear here."
-        case .attention:
-            "Items that need action will appear here."
-        case .settings:
-            ""
+    private var inspectedItemBinding: Binding<ImportItem?> {
+        Binding {
+            guard let inspectedItemID else { return nil }
+            return store.item(id: inspectedItemID)
+        } set: { item in
+            inspectedItemID = item?.id
+        }
+    }
+
+    private var defaultWorkflowBinding: Binding<WorkflowID> {
+        Binding {
+            store.settings.defaultWorkflow
+        } set: { workflow in
+            store.setDefaultWorkflow(workflow)
         }
     }
 
     private var filteredItems: [ImportItem] {
-        items(for: selection)
-    }
-
-    private func items(for section: NavigationSection) -> [ImportItem] {
-        switch section {
-        case .toReview:
-            store.items.filter { [.new, .queued, .transcribing, .transcribed, .analyzing, .readyForReview, .importing].contains($0.status) }
-        case .imported:
-            store.items.filter { $0.status == .imported }
-        case .attention:
-            store.items.filter { $0.status == .needsAttention || $0.status == .failed }
-        case .settings:
-            []
-        }
-    }
-
-    private func count(for section: NavigationSection) -> Int {
-        switch section {
-        case .toReview:
-            store.items.filter { $0.status == .readyForReview }.count
-        case .imported:
-            store.items.filter { $0.status == .imported }.count
-        case .attention:
-            store.items.filter { $0.status == .needsAttention || $0.status == .failed }.count
-        case .settings:
-            0
-        }
-    }
-
-    private func syncSelection() {
-        let ids = Set(filteredItems.map(\.id))
-        if let selectedItemID, ids.contains(selectedItemID) {
-            return
-        }
-        selectedItemID = filteredItems.first?.id
-    }
-}
-
-struct SidebarView: View {
-    @Binding var selection: NavigationSection
-    var count: (NavigationSection) -> Int
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("Voice Memo Renamer")
-                .font(.headline)
-                .padding(.horizontal, 14)
-                .padding(.top, 16)
-
-            VStack(spacing: 4) {
-                ForEach(NavigationSection.allCases) { section in
-                    Button {
-                        selection = section
-                    } label: {
-                        SidebarRow(
-                            section: section,
-                            count: count(section),
-                            isSelected: selection == section
-                        )
-                    }
-                    .buttonStyle(SidebarButtonStyle(isSelected: selection == section))
-                }
-            }
-            .padding(.horizontal, 8)
-
-            Spacer()
-        }
-        .background(Color(nsColor: .controlBackgroundColor))
-    }
-}
-
-struct SidebarRow: View {
-    var section: NavigationSection
-    var count: Int
-    var isSelected: Bool
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: section.icon)
-                .font(.system(size: 15, weight: .medium))
-                .frame(width: 20)
-                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-
-            Text(section.label)
-                .font(.subheadline.weight(isSelected ? .semibold : .regular))
-                .lineLimit(1)
-
-            Spacer(minLength: 8)
-
-            if count > 0 {
-                Text("\(count)")
-                    .font(.caption.weight(.semibold))
-                    .monospacedDigit()
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2)
-                    .background(Color.secondary.opacity(0.16))
-                    .clipShape(Capsule())
-            }
-        }
-        .contentShape(Rectangle())
-    }
-}
-
-struct SidebarButtonStyle: ButtonStyle {
-    var isSelected: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .foregroundStyle(isSelected ? Color.primary : Color.secondary)
-            .background(isSelected ? Color.accentColor.opacity(0.16) : Color.clear)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .opacity(configuration.isPressed ? 0.7 : 1)
-    }
-}
-
-struct ImportListView: View {
-    @EnvironmentObject private var store: ImportStore
-    @State private var isTargeted = false
-    var title: String
-    var showsImportHeader: Bool
-    var emptyMessage: String
-    var items: [ImportItem]
-    @Binding var selectedItemID: ImportItem.ID?
-
-    var body: some View {
-        VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    Text(title)
-                        .font(.title2.weight(.semibold))
-                    Spacer()
-                }
-
-                if showsImportHeader {
-                    DropHeader(isTargeted: isTargeted) {
-                        chooseAudioFiles()
-                    }
-                }
-            }
-            .padding(18)
-
-            if items.isEmpty {
-                EmptyListState(
-                    message: emptyMessage,
-                    showsImportIcon: showsImportHeader
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List(items, selection: $selectedItemID) { item in
-                    ImportRow(item: item)
-                        .tag(item.id)
-                }
-                .listStyle(.inset)
-            }
-        }
-        .background(Color(nsColor: .windowBackgroundColor))
-        .if(showsImportHeader) { view in
-            view.onDrop(of: supportedTypes, isTargeted: $isTargeted) { providers in
-                handleDrop(providers)
+        store.items.filter { item in
+            switch filter {
+            case .all:
+                true
+            case .active:
+                [.new, .queued, .transcribing, .transcribed, .analyzing, .importing].contains(item.status)
+            case .review:
+                item.status == .readyForReview
+            case .attention:
+                item.status == .needsAttention || item.status == .failed
+            case .imported:
+                item.status == .imported
             }
         }
     }
@@ -270,10 +196,52 @@ struct ImportListView: View {
         [.fileURL, .audio, .mpeg4Audio, .mp3, .wav, .aiff, .mpeg4Movie, .quickTimeMovie]
     }
 
-    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
-        for provider in providers {
-            importDroppedProvider(provider)
+    private func refreshConnectivity() async {
+        do {
+            let service = MacWhisperService(
+                executablePath: store.settings.macWhisperPath,
+                timeoutSeconds: store.settings.transcriptionTimeoutSeconds
+            )
+            _ = try await service.version()
+            await MainActor.run { macWhisperState = .ok }
+        } catch {
+            await MainActor.run {
+                macWhisperState = .unavailable((error as? ProcessingFailure)?.details ?? error.localizedDescription)
+            }
         }
+
+        guard let baseURL = URL(string: store.settings.lmStudioBaseURL) else {
+            lmStudioState = .unavailable("Invalid LM Studio URL")
+            return
+        }
+        do {
+            let requestURL = baseURL.appendingPathComponent("models")
+            let (_, response) = try await URLSession.shared.data(from: requestURL)
+            if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
+                await MainActor.run { lmStudioState = .ok }
+            } else {
+                await MainActor.run { lmStudioState = .unavailable("LM Studio did not respond with a valid model list") }
+            }
+        } catch {
+            await MainActor.run { lmStudioState = .unavailable(error.localizedDescription) }
+        }
+    }
+
+    private func handlePrimaryAction(_ item: ImportItem) {
+        switch item.status {
+        case .readyForReview:
+            ImportProcessor(store: store).export(item.id)
+        case .failed, .needsAttention:
+            ImportProcessor(store: store).process(item.id)
+        case .imported:
+            Finder.reveal(item.exportedMarkdownPath ?? item.originalPath)
+        default:
+            break
+        }
+    }
+
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        providers.forEach(importDroppedProvider)
         return true
     }
 
@@ -308,7 +276,6 @@ struct ImportListView: View {
     private func importAudioFile(_ url: URL) {
         Task { @MainActor in
             if let imported = await store.addItem(from: url) {
-                selectedItemID = imported.id
                 ImportProcessor(store: store).process(imported.id)
             }
         }
@@ -337,13 +304,12 @@ struct ImportListView: View {
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
-        panel.allowedContentTypes = [.audio, .mpeg4Audio, .mp3, .wav]
+        panel.allowedContentTypes = [.audio, .mpeg4Audio, .mp3, .wav, .aiff]
 
         if panel.runModal() == .OK {
             Task { @MainActor in
                 for url in panel.urls {
                     if let imported = await store.addItem(from: url) {
-                        selectedItemID = imported.id
                         ImportProcessor(store: store).process(imported.id)
                     }
                 }
@@ -352,127 +318,154 @@ struct ImportListView: View {
     }
 }
 
-struct EmptyListState: View {
-    var message: String
-    var showsImportIcon: Bool
+struct ConnectivityIcon: View {
+    var systemName: String
+    var state: ConnectivityState
 
     var body: some View {
-        VStack(spacing: 14) {
-            Image(systemName: showsImportIcon ? "waveform.badge.plus" : "tray")
-                .font(.system(size: 36, weight: .regular))
-                .foregroundStyle(Color.secondary)
-
-            Text(message)
-                .font(.headline)
-                .foregroundStyle(.primary)
-                .multilineTextAlignment(.center)
+        ZStack(alignment: .bottomTrailing) {
+            Image(systemName: systemName)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 24, height: 24)
+            Circle()
+                .fill(state.color)
+                .frame(width: 7, height: 7)
+                .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1))
         }
-        .padding(32)
     }
 }
 
-struct DropHeader: View {
+struct EmptyQueueState: View {
     var isTargeted: Bool
-    var chooseFiles: () -> Void
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            horizontalLayout
-            verticalLayout
-        }
-        .padding(14)
-        .background(isTargeted ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-
-    private var horizontalLayout: some View {
-        HStack(spacing: 14) {
-            dropText
-            Spacer(minLength: 20)
-            chooseButton
-                .frame(minWidth: 150)
-        }
-    }
-
-    private var verticalLayout: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            dropText
-            chooseButton
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    private var dropText: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "waveform.badge.plus")
-                .font(.title3)
+        VStack(spacing: 12) {
+            Image(systemName: isTargeted ? "arrow.down.doc" : "waveform.badge.plus")
+                .font(.system(size: 40, weight: .regular))
+                .foregroundStyle(isTargeted ? Color.accentColor : Color.secondary)
+            Text(isTargeted ? "Drop to add audio" : "Drop an audio file")
+                .font(.title3.weight(.semibold))
+            Text("The queue is the workspace. New recordings from watch folders appear here when the app starts.")
+                .font(.subheadline)
                 .foregroundStyle(.secondary)
-                .frame(width: 24)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Drop audio files")
-                    .font(.headline)
-                    .lineLimit(1)
-                Text("Processing starts automatically.")
-                    .foregroundStyle(.secondary)
-                    .font(.subheadline)
-                    .lineLimit(1)
-            }
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
         }
-    }
-
-    private var chooseButton: some View {
-        Button {
-            chooseFiles()
-        } label: {
-            Label("Choose Audio", systemImage: "plus")
-                .labelStyle(.titleAndIcon)
-        }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.regular)
+        .padding(40)
     }
 }
 
-struct ImportRow: View {
+struct QueueRow: View {
     var item: ImportItem
+    var policy: WorkflowPolicy
+    var action: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(item.displayTitle)
-                    .font(.headline)
-                    .lineLimit(1)
-                HStack(spacing: 8) {
-                    Text(DateFormatter.itemDate.string(from: item.recordingDate))
-                    Text(item.workflow.label)
+        HStack(alignment: .top, spacing: 12) {
+            StatusGlyph(status: item.status)
+                .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(item.status.label)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(statusColor)
+                    Text(item.displayTitle)
+                        .font(.headline)
+                        .lineLimit(1)
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+
+                Text("-> \(generatedFilename)")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                if let summary = item.analysis?.summary, !summary.isEmpty {
+                    Text(summary)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                } else {
+                    Text(placeholder)
+                        .font(.subheadline)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+
+                Text("\(policy.name) · \(plan)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
 
-            Spacer()
+            Spacer(minLength: 16)
 
-            StatusPill(status: item.status)
+            primaryActionButton
         }
-        .padding(.vertical, 6)
-    }
-}
-
-struct StatusPill: View {
-    var status: ImportStatus
-
-    var body: some View {
-        Text(status.label)
-            .font(.caption.weight(.medium))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(color.opacity(0.14))
-            .foregroundStyle(color)
-            .clipShape(Capsule())
+        .padding(.vertical, 4)
     }
 
-    private var color: Color {
-        switch status {
+    @ViewBuilder
+    private var primaryActionButton: some View {
+        if let actionTitle = item.primaryActionTitle {
+            if item.status == .readyForReview {
+                Button(actionTitle) {
+                    action()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .padding(.top, 2)
+            } else {
+                Button(actionTitle) {
+                    action()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .padding(.top, 2)
+            }
+        }
+    }
+
+    private var generatedFilename: String {
+        if item.analysis == nil {
+            return "New filename pending"
+        }
+        return FilenamePattern.render(pattern: policy.filenamePattern, item: item, workflowName: policy.name)
+    }
+
+    private var placeholder: String {
+        switch item.status {
+        case .queued, .transcribing, .analyzing:
+            "Processing transcript and routing details."
+        case .failed, .needsAttention:
+            item.error?.message ?? "This item needs attention."
+        default:
+            "Summary pending."
+        }
+    }
+
+    private var plan: String {
+        let transcript: String
+        switch policy.transcriptBehavior {
+        case .appendToMonthlyNote: transcript = "appends monthly note"
+        case .createMarkdownFile: transcript = "creates markdown"
+        case .saveTranscriptOnly: transcript = "saves transcript"
+        case .doNotExportTranscript: transcript = "no transcript export"
+        }
+
+        let audio: String
+        switch policy.audioBehavior {
+        case .copyAudioToDestination: audio = "copies audio"
+        case .moveAudioToDestination: audio = "moves audio"
+        case .doNotExportAudio: audio = "no audio export"
+        case .linkExistingAudio: audio = "links audio"
+        }
+        return "\(audio) · \(transcript)"
+    }
+
+    private var statusColor: Color {
+        switch item.status {
         case .readyForReview: .accentColor
         case .imported: .green
         case .failed, .needsAttention: .red
@@ -482,29 +475,33 @@ struct StatusPill: View {
     }
 }
 
-struct EmptyDetailView: View {
-    var message = "No memo selected"
+struct StatusGlyph: View {
+    var status: ImportStatus
 
     var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "waveform")
-                .font(.largeTitle)
-                .foregroundStyle(.secondary)
-            Text(message)
-                .font(.headline)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        Image(systemName: icon)
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(color)
+            .frame(width: 24, height: 24)
     }
-}
 
-extension View {
-    @ViewBuilder
-    func `if`<Content: View>(_ condition: Bool, transform: (Self) -> Content) -> some View {
-        if condition {
-            transform(self)
-        } else {
-            self
+    private var icon: String {
+        switch status {
+        case .new, .queued: "clock"
+        case .transcribing, .transcribed, .analyzing, .importing: "arrow.triangle.2.circlepath"
+        case .readyForReview: "checkmark.circle"
+        case .imported: "checkmark.circle.fill"
+        case .failed, .needsAttention: "exclamationmark.triangle.fill"
+        }
+    }
+
+    private var color: Color {
+        switch status {
+        case .readyForReview: .accentColor
+        case .imported: .green
+        case .failed, .needsAttention: .red
+        case .transcribing, .transcribed, .analyzing, .importing, .queued: .orange
+        case .new: .secondary
         }
     }
 }

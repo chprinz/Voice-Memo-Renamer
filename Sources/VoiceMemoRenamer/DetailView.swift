@@ -16,6 +16,7 @@ struct ImportDetailView: View {
             Picker("", selection: $selectedTab) {
                 Text("Summary").tag("summary")
                 Text("Transcript").tag("transcript")
+                Text("Files").tag("files")
             }
             .pickerStyle(.segmented)
             .padding([.horizontal, .top], 24)
@@ -24,8 +25,10 @@ struct ImportDetailView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     if selectedTab == "summary" {
                         summarySection
-                    } else {
+                    } else if selectedTab == "transcript" {
                         transcriptSection
+                    } else {
+                        filesSection
                     }
 
                     DisclosureGroup("Technical details", isExpanded: $showDetails) {
@@ -45,7 +48,7 @@ struct ImportDetailView: View {
         HStack(alignment: .top, spacing: 18) {
             VStack(alignment: .leading, spacing: 8) {
                 Text(item.displayTitle)
-                    .font(.system(size: 28, weight: .semibold))
+                    .font(.system(size: 24, weight: .semibold))
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -54,7 +57,8 @@ struct ImportDetailView: View {
                     if let duration = item.durationSeconds {
                         Text(durationText(duration))
                     }
-                    Text(item.originalFilename)
+                    Text(generatedFilename)
+                        .monospaced()
                 }
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -103,11 +107,11 @@ struct ImportDetailView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Destination")
+                Text("Workflow")
                     .font(.headline)
                 Picker("Destination", selection: workflowBinding) {
-                    ForEach(WorkflowID.allCases) { workflow in
-                        Text(workflow.label).tag(workflow)
+                    ForEach(store.settings.workflows.filter(\.isEnabled)) { workflow in
+                        Text(workflow.name).tag(workflow.id)
                     }
                 }
                 .labelsHidden()
@@ -141,6 +145,17 @@ struct ImportDetailView: View {
         }
     }
 
+    private var filesSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            FileActionRow(title: "Original file", path: item.originalPath, openInsteadOfReveal: false)
+            FileActionRow(title: "Processing copy", path: item.managedAudioPath, openInsteadOfReveal: false)
+            FileActionRow(title: "Markdown note", path: item.exportedMarkdownPath, openInsteadOfReveal: true)
+            if let exportedAudio = exportedAudioPath {
+                FileActionRow(title: "Exported audio", path: exportedAudio, openInsteadOfReveal: false)
+            }
+        }
+    }
+
     private var transcriptSection: some View {
         Text(item.transcript ?? "Transcript will appear here after MacWhisper finishes.")
             .font(.body.monospaced())
@@ -153,6 +168,7 @@ struct ImportDetailView: View {
         VStack(alignment: .leading, spacing: 8) {
             DetailLine(label: "Original", value: item.originalPath)
             DetailLine(label: "Managed audio", value: item.managedAudioPath ?? "Not copied")
+            DetailLine(label: "Generated filename", value: generatedFilename)
             DetailLine(label: "Slug", value: item.analysis?.slug ?? "Not analyzed")
             DetailLine(label: "Short slug", value: item.analysis?.shortSlug ?? "Not analyzed")
             DetailLine(label: "Recording date", value: item.recordingDateIsCertain ? "Certain" : "Estimated")
@@ -213,6 +229,72 @@ struct ImportDetailView: View {
     private func durationText(_ duration: Double) -> String {
         let total = Int(duration.rounded())
         return "\(total / 60)m \(total % 60)s"
+    }
+
+    private var generatedFilename: String {
+        let policy = store.workflowPolicy(for: item.workflow)
+        guard item.analysis != nil else { return "New filename pending" }
+        return FilenamePattern.render(pattern: policy.filenamePattern, item: item, workflowName: policy.name)
+    }
+
+    private var exportedAudioPath: String? {
+        item.fileOperations.last { ["copy", "move"].contains($0.kind) }?.destinationPath
+    }
+}
+
+struct StatusPill: View {
+    var status: ImportStatus
+
+    var body: some View {
+        Text(status.label)
+            .font(.caption.weight(.medium))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(color.opacity(0.14))
+            .foregroundStyle(color)
+            .clipShape(Capsule())
+    }
+
+    private var color: Color {
+        switch status {
+        case .readyForReview: .accentColor
+        case .imported: .green
+        case .failed, .needsAttention: .red
+        case .transcribing, .analyzing, .importing, .queued: .orange
+        default: .secondary
+        }
+    }
+}
+
+struct FileActionRow: View {
+    var title: String
+    var path: String?
+    var openInsteadOfReveal: Bool
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.subheadline.weight(.medium))
+                Text(path ?? "Not available")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            if path != nil {
+                Button(openInsteadOfReveal ? "Open" : "Show in Finder") {
+                    if openInsteadOfReveal {
+                        Finder.open(path)
+                    } else {
+                        Finder.reveal(path)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 
