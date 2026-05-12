@@ -95,40 +95,36 @@ enum TranscriptBehavior: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-enum AudioBehavior: String, Codable, CaseIterable, Identifiable {
-    case copyAudioToDestination
-    case moveAudioToDestination
-    case doNotExportAudio
-    case linkExistingAudio
+enum AudioFileBehavior: String, Codable, CaseIterable, Identifiable {
+    case leaveInPlace
+    case copyToFolder
+    case moveToFolder
+    case renameInPlace
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
-        case .copyAudioToDestination: "Copy audio to destination"
-        case .moveAudioToDestination: "Move audio to destination"
-        case .doNotExportAudio: "Do not export audio"
-        case .linkExistingAudio: "Link existing audio where possible"
+        case .leaveInPlace: "Leave audio where it is"
+        case .copyToFolder: "Copy audio to folder"
+        case .moveToFolder: "Move audio to folder"
+        case .renameInPlace: "Rename original in place"
         }
     }
 }
 
-enum OriginalBehavior: String, Codable, CaseIterable, Identifiable {
+private enum LegacyAudioBehavior: String, Codable {
+    case copyAudioToDestination
+    case moveAudioToDestination
+    case doNotExportAudio
+    case linkExistingAudio
+}
+
+private enum LegacyOriginalBehavior: String, Codable {
     case keepOriginal
     case archiveOriginal
     case renameOriginalInPlace
     case neverDeleteAutomatically
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .keepOriginal: "Keep original"
-        case .archiveOriginal: "Archive original"
-        case .renameOriginalInPlace: "Rename original in place"
-        case .neverDeleteAutomatically: "Never delete automatically"
-        }
-    }
 }
 
 enum ReviewBehavior: String, Codable, CaseIterable, Identifiable {
@@ -175,14 +171,119 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
     var destinationPath: String
     var audioDestinationPath: String
     var transcriptBehavior: TranscriptBehavior
-    var audioBehavior: AudioBehavior
-    var originalBehavior: OriginalBehavior
+    var audioFileBehavior: AudioFileBehavior
     var reviewBehavior: ReviewBehavior
     var filenamePattern: String
     var processingStoragePolicy: ProcessingStoragePolicy
 
     var usesWatchFolder: Bool {
         isEnabled && sourceBehavior.usesWatchFolder && !watchFolderPath.isEmpty
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case isEnabled
+        case sourceBehavior
+        case watchFolderPath
+        case destination
+        case destinationPath
+        case audioDestinationPath
+        case transcriptBehavior
+        case audioFileBehavior
+        case audioBehavior
+        case originalBehavior
+        case reviewBehavior
+        case filenamePattern
+        case processingStoragePolicy
+    }
+
+    init(
+        id: String,
+        name: String,
+        isEnabled: Bool,
+        sourceBehavior: SourceBehavior,
+        watchFolderPath: String,
+        destination: WorkflowDestination,
+        destinationPath: String,
+        audioDestinationPath: String,
+        transcriptBehavior: TranscriptBehavior,
+        audioFileBehavior: AudioFileBehavior,
+        reviewBehavior: ReviewBehavior,
+        filenamePattern: String,
+        processingStoragePolicy: ProcessingStoragePolicy
+    ) {
+        self.id = id
+        self.name = name
+        self.isEnabled = isEnabled
+        self.sourceBehavior = sourceBehavior
+        self.watchFolderPath = watchFolderPath
+        self.destination = destination
+        self.destinationPath = destinationPath
+        self.audioDestinationPath = audioDestinationPath
+        self.transcriptBehavior = transcriptBehavior
+        self.audioFileBehavior = audioFileBehavior
+        self.reviewBehavior = reviewBehavior
+        self.filenamePattern = filenamePattern
+        self.processingStoragePolicy = processingStoragePolicy
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
+        sourceBehavior = try container.decodeIfPresent(SourceBehavior.self, forKey: .sourceBehavior) ?? .manualOnly
+        watchFolderPath = try container.decodeIfPresent(String.self, forKey: .watchFolderPath) ?? ""
+        destination = try container.decodeIfPresent(WorkflowDestination.self, forKey: .destination) ?? .projectFolder
+        destinationPath = try container.decodeIfPresent(String.self, forKey: .destinationPath) ?? ""
+        audioDestinationPath = try container.decodeIfPresent(String.self, forKey: .audioDestinationPath) ?? ""
+        transcriptBehavior = try container.decodeIfPresent(TranscriptBehavior.self, forKey: .transcriptBehavior) ?? .createMarkdownFile
+        reviewBehavior = try container.decodeIfPresent(ReviewBehavior.self, forKey: .reviewBehavior) ?? .requireReview
+        filenamePattern = try container.decodeIfPresent(String.self, forKey: .filenamePattern) ?? WorkflowPolicy.defaultFilenamePattern
+        processingStoragePolicy = try container.decodeIfPresent(ProcessingStoragePolicy.self, forKey: .processingStoragePolicy) ?? .deleteAfterSuccessfulExport
+
+        if let behavior = try container.decodeIfPresent(AudioFileBehavior.self, forKey: .audioFileBehavior) {
+            audioFileBehavior = behavior
+        } else {
+            let legacyAudio = try container.decodeIfPresent(LegacyAudioBehavior.self, forKey: .audioBehavior) ?? .doNotExportAudio
+            let legacyOriginal = try container.decodeIfPresent(LegacyOriginalBehavior.self, forKey: .originalBehavior) ?? .keepOriginal
+            audioFileBehavior = Self.migratedAudioFileBehavior(audioBehavior: legacyAudio, originalBehavior: legacyOriginal)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(isEnabled, forKey: .isEnabled)
+        try container.encode(sourceBehavior, forKey: .sourceBehavior)
+        try container.encode(watchFolderPath, forKey: .watchFolderPath)
+        try container.encode(destination, forKey: .destination)
+        try container.encode(destinationPath, forKey: .destinationPath)
+        try container.encode(audioDestinationPath, forKey: .audioDestinationPath)
+        try container.encode(transcriptBehavior, forKey: .transcriptBehavior)
+        try container.encode(audioFileBehavior, forKey: .audioFileBehavior)
+        try container.encode(reviewBehavior, forKey: .reviewBehavior)
+        try container.encode(filenamePattern, forKey: .filenamePattern)
+        try container.encode(processingStoragePolicy, forKey: .processingStoragePolicy)
+    }
+
+    private static func migratedAudioFileBehavior(
+        audioBehavior: LegacyAudioBehavior,
+        originalBehavior: LegacyOriginalBehavior
+    ) -> AudioFileBehavior {
+        if originalBehavior == .renameOriginalInPlace {
+            return .renameInPlace
+        }
+        switch audioBehavior {
+        case .copyAudioToDestination:
+            return .copyToFolder
+        case .moveAudioToDestination:
+            return .moveToFolder
+        case .doNotExportAudio, .linkExistingAudio:
+            return .leaveInPlace
+        }
     }
 }
 
@@ -380,8 +481,7 @@ extension WorkflowPolicy {
             destinationPath: "🖋️ Journal",
             audioDestinationPath: "🖋️ Journal/Audio",
             transcriptBehavior: .appendToMonthlyNote,
-            audioBehavior: .copyAudioToDestination,
-            originalBehavior: .keepOriginal,
+            audioFileBehavior: .copyToFolder,
             reviewBehavior: .requireReview,
             filenamePattern: defaultFilenamePattern,
             processingStoragePolicy: .deleteAfterSuccessfulExport
@@ -396,8 +496,7 @@ extension WorkflowPolicy {
             destinationPath: "📮INBOX/📻 VOICE INBOX",
             audioDestinationPath: "",
             transcriptBehavior: .createMarkdownFile,
-            audioBehavior: .doNotExportAudio,
-            originalBehavior: .keepOriginal,
+            audioFileBehavior: .leaveInPlace,
             reviewBehavior: .requireReview,
             filenamePattern: "{date}_{time}_{source}_{slug}",
             processingStoragePolicy: .deleteAfterSuccessfulExport
@@ -412,8 +511,7 @@ extension WorkflowPolicy {
             destinationPath: "",
             audioDestinationPath: "",
             transcriptBehavior: .createMarkdownFile,
-            audioBehavior: .doNotExportAudio,
-            originalBehavior: .keepOriginal,
+            audioFileBehavior: .leaveInPlace,
             reviewBehavior: .requireReview,
             filenamePattern: defaultFilenamePattern,
             processingStoragePolicy: .deleteAfterSuccessfulExport
@@ -428,11 +526,10 @@ extension WorkflowPolicy {
             destinationPath: "",
             audioDestinationPath: "",
             transcriptBehavior: .doNotExportTranscript,
-            audioBehavior: .linkExistingAudio,
-            originalBehavior: .renameOriginalInPlace,
+            audioFileBehavior: .renameInPlace,
             reviewBehavior: .requireReview,
             filenamePattern: defaultFilenamePattern,
-            processingStoragePolicy: .keepUntilManuallyCleared
+            processingStoragePolicy: .deleteAfterSuccessfulExport
         )
     ]
 }

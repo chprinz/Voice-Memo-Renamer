@@ -98,16 +98,16 @@ struct SettingsView: View {
     private var storageSection: some View {
         Section("Storage") {
             HStack {
-                Text("Current app storage")
+                Text("App Cache")
                 Spacer()
                 Text(FileSizeFormatter.storageText(bytes: store.appStorageUsage()))
                     .foregroundStyle(.secondary)
             }
-            Text("App storage contains temporary working copies used while MacWhisper transcribes and analyzes audio. Original audio is not deleted by this cleanup.")
+            Text("Cache contains only temporary processing copies, never original audio files.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Button("Clean Completed Files") {
-                store.cleanCompletedFiles()
+            Button("Clear Cache") {
+                store.clearCache()
             }
         }
     }
@@ -380,19 +380,13 @@ struct WorkflowPolicyEditor: View {
                 }
             }
 
-            Picker("Audio", selection: $policy.audioBehavior) {
-                ForEach(visibleAudioBehaviors) { behavior in
+            Picker("Audio file", selection: $policy.audioFileBehavior) {
+                ForEach(AudioFileBehavior.allCases) { behavior in
                     Text(behavior.label).tag(behavior)
                 }
             }
-            if policy.audioBehavior == .copyAudioToDestination || policy.audioBehavior == .moveAudioToDestination {
+            if policy.audioFileBehavior == .copyToFolder || policy.audioFileBehavior == .moveToFolder {
                 FolderPathRow(title: "Audio folder", path: $policy.audioDestinationPath)
-            }
-
-            Picker("Original file", selection: $policy.originalBehavior) {
-                ForEach(visibleOriginalBehaviors) { behavior in
-                    Text(behavior.label).tag(behavior)
-                }
             }
 
             TextField("Filename pattern", text: $policy.filenamePattern)
@@ -408,14 +402,6 @@ struct WorkflowPolicyEditor: View {
 
     private var visibleTranscriptBehaviors: [TranscriptBehavior] {
         [.appendToMonthlyNote, .createMarkdownFile, .doNotExportTranscript]
-    }
-
-    private var visibleAudioBehaviors: [AudioBehavior] {
-        [.copyAudioToDestination, .moveAudioToDestination, .doNotExportAudio]
-    }
-
-    private var visibleOriginalBehaviors: [OriginalBehavior] {
-        [.keepOriginal, .archiveOriginal, .renameOriginalInPlace, .neverDeleteAutomatically]
     }
 
     private var defaultBinding: Binding<Bool> {

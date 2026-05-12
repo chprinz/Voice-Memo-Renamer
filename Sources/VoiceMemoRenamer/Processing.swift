@@ -257,42 +257,43 @@ struct ObsidianJournalExporter {
     var settings: AppSettings
 
     func export(_ item: ImportItem) throws -> ImportItem {
-        guard let managedAudioPath = item.managedAudioPath else {
-            throw ProcessingFailure(message: "No managed audio file is available.", details: item.originalPath)
-        }
-
         let policy = settings.policy(for: item.workflow)
         let vaultRoot = URL(fileURLWithPath: settings.vaultRootPath)
-        let sourceAudioURL = URL(fileURLWithPath: managedAudioPath)
+        let sourceAudioURL = try audioSourceURL(for: item)
         let generatedFilename = FilenamePattern.render(pattern: policy.filenamePattern, item: item, workflowName: policy.name)
         var updated = item
         var exportedAudioURL: URL?
 
-        if policy.audioBehavior == .copyAudioToDestination || policy.audioBehavior == .moveAudioToDestination {
+        if policy.audioFileBehavior == .copyToFolder || policy.audioFileBehavior == .moveToFolder {
             let audioDirectory = audioDestinationDirectory(for: policy, vaultRoot: vaultRoot, item: item)
             try FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
             let destinationAudioURL = uniqueURL(in: audioDirectory, filename: generatedFilename)
-            if policy.audioBehavior == .moveAudioToDestination {
+            if policy.audioFileBehavior == .moveToFolder {
                 try FileManager.default.moveItem(at: sourceAudioURL, to: destinationAudioURL)
+                updated.originalPath = destinationAudioURL.path
+                updated.originalFilename = destinationAudioURL.lastPathComponent
                 updated.managedAudioPath = nil
             } else {
                 try FileManager.default.copyItem(at: sourceAudioURL, to: destinationAudioURL)
             }
             exportedAudioURL = destinationAudioURL
             updated.fileOperations.append(FileOperationRecord(
-                kind: policy.audioBehavior == .moveAudioToDestination ? "move" : "copy",
+                kind: policy.audioFileBehavior == .moveToFolder ? "move" : "copy",
                 sourcePath: sourceAudioURL.path,
                 destinationPath: destinationAudioURL.path,
                 occurredAt: Date()
             ))
         }
 
-        if policy.originalBehavior == .renameOriginalInPlace {
-            let originalURL = URL(fileURLWithPath: item.originalPath)
+        if policy.audioFileBehavior == .renameInPlace {
+            let originalURL = sourceAudioURL
             let destinationURL = uniqueURL(in: originalURL.deletingLastPathComponent(), filename: generatedFilename)
             try FileManager.default.moveItem(at: originalURL, to: destinationURL)
             updated.originalPath = destinationURL.path
             updated.originalFilename = destinationURL.lastPathComponent
+            if updated.managedAudioPath == originalURL.path {
+                updated.managedAudioPath = nil
+            }
             updated.fileOperations.append(FileOperationRecord(
                 kind: "rename_original",
                 sourcePath: originalURL.path,
@@ -318,8 +319,22 @@ struct ObsidianJournalExporter {
 
         updated.status = .imported
         updated.importedAt = Date()
-        updated = cleanProcessingCopyIfNeeded(updated, policy: policy)
         return updated
+    }
+
+    private func audioSourceURL(for item: ImportItem) throws -> URL {
+        let originalURL = URL(fileURLWithPath: item.originalPath)
+        if FileManager.default.fileExists(atPath: originalURL.path) {
+            return originalURL
+        }
+        if let managedAudioPath = item.managedAudioPath,
+           FileManager.default.fileExists(atPath: managedAudioPath) {
+            return URL(fileURLWithPath: managedAudioPath)
+        }
+        throw ProcessingFailure(
+            message: "Source audio is not available.",
+            details: "Original: \(item.originalPath)\nLegacy processing copy: \(item.managedAudioPath ?? "None")"
+        )
     }
 
     private func audioDestinationDirectory(for policy: WorkflowPolicy, vaultRoot: URL, item: ImportItem) -> URL {
@@ -424,22 +439,6 @@ struct ObsidianJournalExporter {
         """
     }
 
-    private func cleanProcessingCopyIfNeeded(_ item: ImportItem, policy: WorkflowPolicy) -> ImportItem {
-        var updated = item
-        guard policy.processingStoragePolicy == .deleteAfterSuccessfulExport, let managedAudioPath = updated.managedAudioPath else {
-            return updated
-        }
-        try? FileManager.default.removeItem(atPath: managedAudioPath)
-        updated.managedAudioPath = nil
-        updated.fileOperations.append(FileOperationRecord(
-            kind: "delete_processing_copy",
-            sourcePath: managedAudioPath,
-            destinationPath: "",
-            occurredAt: Date()
-        ))
-        return updated
-    }
-
     private func uniqueURL(in directory: URL, filename: String) -> URL {
         let base = (filename as NSString).deletingPathExtension
         let ext = (filename as NSString).pathExtension
@@ -464,7 +463,7 @@ final class ImportProcessor {
     func process(_ id: ImportItem.ID) {
         let task = Task {
             defer { store.finishProcessingTask(for: id) }
-            guard var item = store.item(id: id), let path = item.managedAudioPath else { return }
+            guard var item = store.item(id: id) else { return }
             guard item.retryCount < store.settings.retryLimit else {
                 item.status = .needsAttention
                 item.error = ProcessingError(
@@ -482,10 +481,12 @@ final class ImportProcessor {
                 store.update(item)
 
                 let whisper = MacWhisperService(executablePath: store.settings.macWhisperPath, timeoutSeconds: store.settings.transcriptionTimeoutSeconds)
-                let transcript = try await whisper.transcribe(filePath: path)
+                let transcription = try await transcribe(item: item, with: whisper)
+                item = transcription.item
+                let transcript = transcription.transcript
                 try Task.checkCancellation()
                 guard !transcript.isEmpty else {
-                    throw ProcessingFailure(message: "MacWhisper returned an empty transcript.", details: path)
+                    throw ProcessingFailure(message: "MacWhisper returned an empty transcript.", details: item.originalPath)
                 }
                 item = store.item(id: id) ?? item
                 item.transcript = transcript
@@ -531,6 +532,69 @@ final class ImportProcessor {
             }
         }
         store.registerProcessingTask(task, for: id)
+    }
+
+    private func transcribe(item: ImportItem, with whisper: MacWhisperService) async throws -> (transcript: String, item: ImportItem) {
+        let sourceURL = try audioSourceURL(for: item)
+        do {
+            return (try await whisper.transcribe(filePath: sourceURL.path), item)
+        } catch {
+            let tempURL = try temporaryProcessingCopyURL(for: sourceURL)
+            try FileManager.default.createDirectory(at: AppPaths.processingCacheDirectory, withIntermediateDirectories: true)
+            try FileManager.default.copyItem(at: sourceURL, to: tempURL)
+            var updated = item
+            updated.fileOperations.append(FileOperationRecord(
+                kind: "temporary_processing_copy",
+                sourcePath: sourceURL.path,
+                destinationPath: tempURL.path,
+                occurredAt: Date()
+            ))
+            store.update(updated)
+            do {
+                let transcript = try await whisper.transcribe(filePath: tempURL.path)
+                try? FileManager.default.removeItem(at: tempURL)
+                updated.fileOperations.append(FileOperationRecord(
+                    kind: "delete_temporary_processing_copy",
+                    sourcePath: tempURL.path,
+                    destinationPath: "",
+                    occurredAt: Date()
+                ))
+                store.update(updated)
+                return (transcript, updated)
+            } catch {
+                try? FileManager.default.removeItem(at: tempURL)
+                var failed = store.item(id: item.id) ?? updated
+                failed.fileOperations.append(FileOperationRecord(
+                    kind: "delete_temporary_processing_copy",
+                    sourcePath: tempURL.path,
+                    destinationPath: "",
+                    occurredAt: Date()
+                ))
+                store.update(failed)
+                throw error
+            }
+        }
+    }
+
+    private func audioSourceURL(for item: ImportItem) throws -> URL {
+        let originalURL = URL(fileURLWithPath: item.originalPath)
+        if FileManager.default.fileExists(atPath: originalURL.path) {
+            return originalURL
+        }
+        if let managedAudioPath = item.managedAudioPath,
+           FileManager.default.fileExists(atPath: managedAudioPath) {
+            return URL(fileURLWithPath: managedAudioPath)
+        }
+        throw ProcessingFailure(
+            message: "Source audio is not available.",
+            details: "Original: \(item.originalPath)\nLegacy processing copy: \(item.managedAudioPath ?? "None")"
+        )
+    }
+
+    private func temporaryProcessingCopyURL(for sourceURL: URL) throws -> URL {
+        let ext = sourceURL.pathExtension.isEmpty ? "m4a" : sourceURL.pathExtension
+        let base = "\(UUID().uuidString)_\(sourceURL.deletingPathExtension().lastPathComponent.slugSafe)"
+        return AppPaths.processingCacheDirectory.appendingPathComponent(base).appendingPathExtension(ext)
     }
 
     func export(_ id: ImportItem.ID) {

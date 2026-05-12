@@ -12,6 +12,10 @@ enum AppPaths {
         applicationSupport.appendingPathComponent("Managed Audio", isDirectory: true)
     }
 
+    static var processingCacheDirectory: URL {
+        applicationSupport.appendingPathComponent("Processing Cache", isDirectory: true)
+    }
+
     static var dropImportDirectory: URL {
         applicationSupport.appendingPathComponent("Dropped Files", isDirectory: true)
     }

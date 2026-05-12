@@ -158,12 +158,11 @@ struct ImportDetailView: View {
 
     private var filesSection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            FileActionRow(title: "Original file", path: item.originalPath, openInsteadOfReveal: false)
-            FileActionRow(title: "Processing copy", path: item.managedAudioPath, openInsteadOfReveal: false)
-            FileActionRow(title: "Markdown note", path: item.exportedMarkdownPath, openInsteadOfReveal: true)
+            FileActionRow(title: "Source audio", path: item.originalPath, openInsteadOfReveal: false)
             if let exportedAudio = exportedAudioPath {
                 FileActionRow(title: "Exported audio", path: exportedAudio, openInsteadOfReveal: false)
             }
+            FileActionRow(title: "Markdown note", path: item.exportedMarkdownPath, openInsteadOfReveal: true)
         }
     }
 
@@ -177,14 +176,19 @@ struct ImportDetailView: View {
 
     private var technicalDetails: some View {
         VStack(alignment: .leading, spacing: 8) {
-            DetailLine(label: "Original", value: item.originalPath)
-            DetailLine(label: "Managed audio", value: item.managedAudioPath ?? "Not copied")
+            DetailLine(label: "Source audio", value: item.originalPath)
+            if let managedAudioPath = item.managedAudioPath {
+                DetailLine(label: "Legacy processing copy", value: managedAudioPath)
+            }
             DetailLine(label: "Generated filename", value: generatedFilename)
             DetailLine(label: "Slug", value: item.analysis?.slug ?? "Not analyzed")
             DetailLine(label: "Short slug", value: item.analysis?.shortSlug ?? "Not analyzed")
             DetailLine(label: "Recording date", value: item.recordingDateIsCertain ? "Certain" : "Estimated")
             if let exported = item.exportedMarkdownPath {
                 DetailLine(label: "Monthly note", value: exported)
+            }
+            ForEach(temporaryOperations) { operation in
+                DetailLine(label: operation.kind.replacingOccurrences(of: "_", with: " "), value: operation.destinationPath.isEmpty ? operation.sourcePath : operation.destinationPath)
             }
             if let error = item.error {
                 DetailLine(label: "Last error", value: error.technicalDetails)
@@ -233,7 +237,7 @@ struct ImportDetailView: View {
         case .needsAttention, .failed:
             ImportProcessor(store: store).process(item.id)
         case .imported:
-            Finder.reveal(item.exportedMarkdownPath ?? item.managedAudioPath)
+            Finder.reveal(item.exportedMarkdownPath ?? exportedAudioPath ?? item.originalPath)
         default:
             break
         }
@@ -251,7 +255,21 @@ struct ImportDetailView: View {
     }
 
     private var exportedAudioPath: String? {
-        item.fileOperations.last { ["copy", "move"].contains($0.kind) }?.destinationPath
+        item.fileOperations.last { operation in
+            ["copy", "move"].contains(operation.kind) && !isCachePath(operation.destinationPath)
+        }?.destinationPath
+    }
+
+    private var temporaryOperations: [FileOperationRecord] {
+        item.fileOperations.filter { operation in
+            operation.kind.contains("temporary_processing") || operation.kind == "clear_cache"
+        }
+    }
+
+    private func isCachePath(_ path: String) -> Bool {
+        path.hasPrefix(AppPaths.managedAudioDirectory.path)
+            || path.hasPrefix(AppPaths.processingCacheDirectory.path)
+            || path.hasPrefix(AppPaths.dropImportDirectory.path)
     }
 }
 
@@ -322,7 +340,7 @@ struct AttentionBox: View {
                 .font(.headline)
             HStack {
                 Button("Open in Finder") {
-                    Finder.reveal(item.managedAudioPath ?? item.originalPath)
+                    Finder.reveal(item.originalPath)
                 }
                 Button("Show technical details") {
                     showDetails = true

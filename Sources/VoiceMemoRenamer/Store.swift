@@ -33,46 +33,19 @@ final class ImportStore: ObservableObject {
         }
         let (recordingDate, certain) = AudioInspector.recordingDate(for: sourceURL)
         let duration = await AudioInspector.duration(for: sourceURL)
-        let managedURL = uniqueManagedAudioURL(for: sourceURL, recordingDate: recordingDate)
 
-        do {
-            try FileManager.default.copyItem(at: sourceURL, to: managedURL)
-            var item = ImportItem(
-                originalFilename: sourceURL.lastPathComponent,
-                originalPath: sourceURL.path,
-                managedAudioPath: managedURL.path,
-                recordingDate: recordingDate,
-                recordingDateIsCertain: certain,
-                durationSeconds: duration,
-                workflow: workflowForSource(sourceURL),
-                status: .queued
-            )
-            item.fileOperations.append(FileOperationRecord(
-                kind: "copy",
-                sourcePath: sourceURL.path,
-                destinationPath: managedURL.path,
-                occurredAt: Date()
-            ))
-            items.insert(item, at: 0)
-            return item
-        } catch {
-            var item = ImportItem(
-                originalFilename: sourceURL.lastPathComponent,
-                originalPath: sourceURL.path,
-                recordingDate: recordingDate,
-                recordingDateIsCertain: certain,
-                durationSeconds: duration,
-                workflow: settings.defaultWorkflow,
-                status: .needsAttention
-            )
-            item.error = ProcessingError(
-                message: "Could not copy the audio file.",
-                technicalDetails: error.localizedDescription,
-                occurredAt: Date()
-            )
-            items.insert(item, at: 0)
-            return item
-        }
+        let item = ImportItem(
+            originalFilename: sourceURL.lastPathComponent,
+            originalPath: sourceURL.path,
+            managedAudioPath: nil,
+            recordingDate: recordingDate,
+            recordingDateIsCertain: certain,
+            durationSeconds: duration,
+            workflow: workflowForSource(sourceURL),
+            status: .queued
+        )
+        items.insert(item, at: 0)
+        return item
     }
 
     func update(_ item: ImportItem) {
@@ -118,8 +91,7 @@ final class ImportStore: ObservableObject {
             destinationPath: "",
             audioDestinationPath: "",
             transcriptBehavior: .createMarkdownFile,
-            audioBehavior: .doNotExportAudio,
-            originalBehavior: .keepOriginal,
+            audioFileBehavior: .leaveInPlace,
             reviewBehavior: .requireReview,
             filenamePattern: WorkflowPolicy.defaultFilenamePattern,
             processingStoragePolicy: .deleteAfterSuccessfulExport
@@ -204,17 +176,21 @@ final class ImportStore: ObservableObject {
     }
 
     func appStorageUsage() -> Int64 {
-        directorySize(AppPaths.managedAudioDirectory) + directorySize(AppPaths.dropImportDirectory)
+        directorySize(AppPaths.processingCacheDirectory)
+            + directorySize(AppPaths.managedAudioDirectory)
+            + directorySize(AppPaths.dropImportDirectory)
     }
 
-    func cleanCompletedFiles() {
+    func clearCache() {
+        removeContents(of: AppPaths.processingCacheDirectory)
+        removeContents(of: AppPaths.managedAudioDirectory)
+        removeContents(of: AppPaths.dropImportDirectory)
         for item in items where item.status == .imported {
             guard let path = item.managedAudioPath else { continue }
-            try? FileManager.default.removeItem(atPath: path)
             var updated = item
             updated.managedAudioPath = nil
             updated.fileOperations.append(FileOperationRecord(
-                kind: "delete_processing_copy",
+                kind: "clear_cache",
                 sourcePath: path,
                 destinationPath: "",
                 occurredAt: Date()
@@ -225,20 +201,9 @@ final class ImportStore: ObservableObject {
 
     private func ensureDirectories() {
         try? FileManager.default.createDirectory(at: AppPaths.applicationSupport, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: AppPaths.processingCacheDirectory, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: AppPaths.managedAudioDirectory, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: AppPaths.dropImportDirectory, withIntermediateDirectories: true)
-    }
-
-    private func uniqueManagedAudioURL(for sourceURL: URL, recordingDate: Date) -> URL {
-        let ext = sourceURL.pathExtension.isEmpty ? "m4a" : sourceURL.pathExtension
-        let base = "\(DateFormatter.filenameDate.string(from: recordingDate))_\(sourceURL.deletingPathExtension().lastPathComponent.slugSafe)"
-        var candidate = AppPaths.managedAudioDirectory.appendingPathComponent(base).appendingPathExtension(ext)
-        var counter = 2
-        while FileManager.default.fileExists(atPath: candidate.path) {
-            candidate = AppPaths.managedAudioDirectory.appendingPathComponent("\(base)-\(counter)").appendingPathExtension(ext)
-            counter += 1
-        }
-        return candidate
     }
 
     private func workflowForSource(_ sourceURL: URL) -> String {
@@ -287,6 +252,16 @@ final class ImportStore: ObservableObject {
             }
         }
         return total
+    }
+
+    private func removeContents(of directory: URL) {
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        ) else { return }
+        for url in contents {
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 
     private static let supportedAudioExtensions = Set(["m4a", "mp3", "wav", "aiff", "aif", "caf", "mp4", "mov"])

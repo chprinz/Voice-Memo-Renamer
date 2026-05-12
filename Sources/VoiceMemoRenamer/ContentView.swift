@@ -477,11 +477,11 @@ struct QueueRow: View {
         }
 
         let audio: String
-        switch policy.audioBehavior {
-        case .copyAudioToDestination: audio = "copies audio"
-        case .moveAudioToDestination: audio = "moves audio"
-        case .doNotExportAudio: audio = "no audio export"
-        case .linkExistingAudio: audio = "links audio"
+        switch policy.audioFileBehavior {
+        case .copyToFolder: audio = "copies audio"
+        case .moveToFolder: audio = "moves audio"
+        case .renameInPlace: audio = "renames audio"
+        case .leaveInPlace: audio = "leaves audio"
         }
         return "\(audio) · \(transcript)"
     }
