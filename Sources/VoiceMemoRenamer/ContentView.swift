@@ -4,8 +4,7 @@ import UniformTypeIdentifiers
 enum QueueFilter: String, CaseIterable, Identifiable {
     case all
     case active
-    case review
-    case attention
+    case needsAction
     case imported
 
     var id: String { rawValue }
@@ -14,8 +13,7 @@ enum QueueFilter: String, CaseIterable, Identifiable {
         switch self {
         case .all: "All"
         case .active: "Active"
-        case .review: "Review"
-        case .attention: "Attention"
+        case .needsAction: "Needs Action"
         case .imported: "Imported"
         }
     }
@@ -41,6 +39,11 @@ enum ConnectivityState {
         case .unavailable(let message): message
         }
     }
+
+    var isAvailable: Bool {
+        if case .ok = self { return true }
+        return false
+    }
 }
 
 struct ContentView: View {
@@ -48,6 +51,8 @@ struct ContentView: View {
     @State private var filter: QueueFilter = .all
     @State private var inspectedItemID: ImportItem.ID?
     @State private var showingSettings = false
+    @State private var showingClearConfirmation = false
+    @State private var pendingClearFilter: QueueFilter?
     @State private var isTargeted = false
     @State private var macWhisperState: ConnectivityState = .unknown
     @State private var lmStudioState: ConnectivityState = .unknown
@@ -73,8 +78,18 @@ struct ContentView: View {
                 .environmentObject(store)
                 .frame(minWidth: 860, idealWidth: 980, minHeight: 680, idealHeight: 760)
         }
-        .task {
-            await refreshConnectivity()
+        .confirmationDialog(clearDialogTitle, isPresented: $showingClearConfirmation, titleVisibility: .visible) {
+            Button(clearDialogButtonTitle, role: .destructive) {
+                performPendingClear()
+            }
+            Button("Cancel", role: .cancel) {
+                pendingClearFilter = nil
+            }
+        } message: {
+            Text(clearDialogMessage)
+        }
+        .task(id: connectivityRefreshKey) {
+            await refreshConnectivityLoop()
         }
     }
 
@@ -117,18 +132,18 @@ struct ContentView: View {
                 .controlSize(.small)
             }
 
-            if store.items.contains(where: { $0.status == .imported }) {
+            if let clearAction {
                 Button {
-                    store.clearCompletedItems()
+                    requestClear(clearAction.filter)
                 } label: {
-                    Label("Clear Completed", systemImage: "checkmark.circle")
+                    Label(clearAction.title, systemImage: "trash")
                 }
                 .controlSize(.small)
             }
 
-            ConnectivityIcon(systemName: "waveform.path.ecg", state: macWhisperState)
+            ServiceStatusIndicator(label: "MW", state: macWhisperState, isActive: isMacWhisperActive)
                 .help("MacWhisper CLI: \(macWhisperState.tooltip)")
-            ConnectivityIcon(systemName: "brain.head.profile", state: lmStudioState)
+            ServiceStatusIndicator(label: "LM", state: lmStudioState, isActive: isLMStudioActive)
                 .help("LM Studio: \(lmStudioState.tooltip)")
         }
         .padding(.horizontal, 20)
@@ -200,18 +215,114 @@ struct ContentView: View {
                 true
             case .active:
                 [.new, .queued, .transcribing, .transcribed, .analyzing, .importing].contains(item.status)
-            case .review:
-                item.status == .readyForReview
-            case .attention:
-                item.status == .needsAttention || item.status == .failed
+            case .needsAction:
+                Self.needsActionStatuses.contains(item.status)
             case .imported:
                 item.status == .imported
             }
         }
     }
 
+    private var clearAction: (filter: QueueFilter, title: String)? {
+        switch filter {
+        case .all:
+            store.items.contains { $0.status == .imported } ? (.all, "Clear Completed") : nil
+        case .active:
+            filteredItems.isEmpty ? nil : (.active, "Clear Active...")
+        case .needsAction:
+            filteredItems.isEmpty ? nil : (.needsAction, "Clear Needs Action...")
+        case .imported:
+            filteredItems.isEmpty ? nil : (.imported, "Clear Imported")
+        }
+    }
+
+    private var clearDialogTitle: String {
+        let filter = pendingClearFilter ?? .all
+        return "\(clearDialogButtonTitle)?"
+    }
+
+    private var clearDialogButtonTitle: String {
+        switch pendingClearFilter ?? .all {
+        case .all: "Clear Completed"
+        case .active: "Clear Active"
+        case .needsAction: "Clear Needs Action"
+        case .imported: "Clear Imported"
+        }
+    }
+
+    private var clearDialogMessage: String {
+        let count = clearCount(for: pendingClearFilter ?? .all)
+        let noun = count == 1 ? "item" : "items"
+        switch pendingClearFilter ?? .all {
+        case .all, .imported:
+            return "This removes \(count) imported \(noun) from the list. Exported files are not deleted."
+        case .active:
+            return "This cancels and removes \(count) active \(noun) from the list. Source files are not deleted."
+        case .needsAction:
+            return "This removes \(count) \(noun) waiting for review or fixes. Source and exported files are not deleted."
+        }
+    }
+
+    private func requestClear(_ filter: QueueFilter) {
+        pendingClearFilter = filter
+        switch filter {
+        case .all, .active, .needsAction:
+            showingClearConfirmation = true
+        case .imported:
+            performPendingClear()
+        }
+    }
+
+    private func performPendingClear() {
+        let filter = pendingClearFilter ?? .all
+        switch filter {
+        case .all:
+            store.clearItems { $0.status == .imported }
+        case .active:
+            store.clearItems { Self.activeStatuses.contains($0.status) }
+        case .needsAction:
+            store.clearItems { Self.needsActionStatuses.contains($0.status) }
+        case .imported:
+            store.clearItems { $0.status == .imported }
+        }
+        pendingClearFilter = nil
+    }
+
+    private func clearCount(for filter: QueueFilter) -> Int {
+        switch filter {
+        case .all, .imported:
+            return store.items.filter { $0.status == .imported }.count
+        case .active:
+            return store.items.filter { Self.activeStatuses.contains($0.status) }.count
+        case .needsAction:
+            return store.items.filter { Self.needsActionStatuses.contains($0.status) }.count
+        }
+    }
+
+    private static let activeStatuses: Set<ImportStatus> = [.new, .queued, .transcribing, .transcribed, .analyzing, .importing]
+    private static let needsActionStatuses: Set<ImportStatus> = [.readyForReview, .needsAttention, .failed]
+
     private var supportedTypes: [UTType] {
         [.fileURL, .audio, .mpeg4Audio, .mp3, .wav, .aiff, .mpeg4Movie, .quickTimeMovie]
+    }
+
+    private var connectivityRefreshKey: String {
+        "\(store.settings.macWhisperPath)|\(store.settings.lmStudioBaseURL)"
+    }
+
+    private var isMacWhisperActive: Bool {
+        store.items.contains { $0.status == .transcribing }
+    }
+
+    private var isLMStudioActive: Bool {
+        store.items.contains { $0.status == .analyzing }
+    }
+
+    private func refreshConnectivityLoop() async {
+        while !Task.isCancelled {
+            await refreshConnectivity()
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+        }
     }
 
     private func refreshConnectivity() async {
@@ -229,12 +340,15 @@ struct ContentView: View {
         }
 
         guard let baseURL = URL(string: store.settings.lmStudioBaseURL) else {
-            lmStudioState = .unavailable("Invalid LM Studio URL")
+            await MainActor.run { lmStudioState = .unavailable("Invalid LM Studio URL") }
             return
         }
         do {
             let requestURL = baseURL.appendingPathComponent("models")
-            let (_, response) = try await URLSession.shared.data(from: requestURL)
+            var request = URLRequest(url: requestURL)
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            request.timeoutInterval = 2
+            let (_, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
                 await MainActor.run { lmStudioState = .ok }
             } else {
@@ -261,6 +375,9 @@ struct ContentView: View {
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        if filter != .all {
+            filter = .active
+        }
         providers.forEach(importDroppedProvider)
         return true
     }
@@ -279,12 +396,15 @@ struct ContentView: View {
         }
         provider.loadFileRepresentation(forTypeIdentifier: type.identifier) { temporaryURL, error in
             guard error == nil, let temporaryURL else { return }
-            let destinationURL = AppPaths.dropImportDirectory
-                .appendingPathComponent(UUID().uuidString)
-                .appendingPathExtension(temporaryURL.pathExtension.isEmpty ? "m4a" : temporaryURL.pathExtension)
+            let fallbackExtension = temporaryURL.pathExtension.isEmpty ? "m4a" : temporaryURL.pathExtension
+            let filename = FileNaming.filename(
+                preferredName: provider.suggestedName,
+                fallbackBase: temporaryURL.deletingPathExtension().lastPathComponent,
+                fallbackExtension: fallbackExtension
+            )
+            let destinationURL = FileNaming.uniqueURL(in: AppPaths.dropImportDirectory, filename: filename)
             do {
                 try FileManager.default.createDirectory(at: AppPaths.dropImportDirectory, withIntermediateDirectories: true)
-                try? FileManager.default.removeItem(at: destinationURL)
                 try FileManager.default.copyItem(at: temporaryURL, to: destinationURL)
                 importAudioFile(destinationURL)
             } catch {
@@ -338,20 +458,58 @@ struct ContentView: View {
     }
 }
 
-struct ConnectivityIcon: View {
-    var systemName: String
+struct ServiceStatusIndicator: View {
+    var label: String
     var state: ConnectivityState
+    var isActive: Bool
+    @State private var pulse = false
 
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            Image(systemName: systemName)
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 24, height: 24)
-            Circle()
-                .fill(state.color)
-                .frame(width: 7, height: 7)
-                .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1))
+        VStack(spacing: 2) {
+            ZStack(alignment: .topTrailing) {
+                Text(label)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.primary)
+                    .frame(width: 28, height: 20)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 5))
+                Circle()
+                    .fill(state.color)
+                    .frame(width: 7, height: 7)
+                    .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1))
+                    .offset(x: 2, y: -2)
+            }
+
+            Capsule()
+                .fill(activityColor)
+                .frame(width: 18, height: 3)
+                .opacity(activityOpacity)
+                .shadow(color: activityColor.opacity(isActive ? 0.6 : 0), radius: isActive ? 3 : 0)
+        }
+        .frame(width: 30, height: 26)
+        .animation(.easeInOut(duration: 0.25), value: state.color)
+        .onAppear { updatePulse() }
+        .onChange(of: isActive) { _ in updatePulse() }
+    }
+
+    private var activityColor: Color {
+        guard state.isAvailable else { return state.color }
+        return isActive ? .green : .secondary
+    }
+
+    private var activityOpacity: Double {
+        guard state.isAvailable else { return 0.75 }
+        return isActive ? (pulse ? 1 : 0.25) : 0.35
+    }
+
+    private func updatePulse() {
+        if isActive {
+            withAnimation(.easeInOut(duration: 0.35).repeatForever(autoreverses: true)) {
+                pulse = true
+            }
+        } else {
+            withAnimation(.easeOut(duration: 0.2)) {
+                pulse = false
+            }
         }
     }
 }

@@ -5,6 +5,7 @@ struct ImportDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selectedTab = "summary"
     @State private var showDetails = false
+    @State private var isHoveringTranscript = false
     var item: ImportItem
 
     var body: some View {
@@ -162,20 +163,37 @@ struct ImportDetailView: View {
             if let exportedAudio = exportedAudioPath {
                 FileActionRow(title: "Exported audio", path: exportedAudio, openInsteadOfReveal: false)
             }
-            FileActionRow(title: "Markdown note", path: item.exportedMarkdownPath, openInsteadOfReveal: true)
+            FileActionRow(
+                title: markdownNoteTitle,
+                path: item.exportedMarkdownPath,
+                openInsteadOfReveal: true,
+                unavailableText: markdownNoteUnavailableText
+            )
         }
     }
 
     private var transcriptSection: some View {
-        Text(item.transcript ?? "Transcript will appear here after MacWhisper finishes.")
-            .font(.body.monospaced())
-            .foregroundStyle(item.transcript == nil ? .secondary : .primary)
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        ZStack(alignment: .topTrailing) {
+            Text(item.transcript ?? "Transcript will appear here after MacWhisper finishes.")
+                .font(.body.monospaced())
+                .foregroundStyle(item.transcript == nil ? .secondary : .primary)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if isHoveringTranscript, let transcript = item.transcript, !transcript.isEmpty {
+                CopyButton(text: transcript, help: "Copy transcript")
+                    .padding(6)
+            }
+        }
+        .onHover { isHoveringTranscript = $0 }
     }
 
     private var technicalDetails: some View {
         VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Spacer()
+                CopyButton(text: technicalDetailsText, help: "Copy technical details")
+            }
             DetailLine(label: "Source audio", value: item.originalPath)
             if let managedAudioPath = item.managedAudioPath {
                 DetailLine(label: "Legacy processing copy", value: managedAudioPath)
@@ -185,7 +203,7 @@ struct ImportDetailView: View {
             DetailLine(label: "Short slug", value: item.analysis?.shortSlug ?? "Not analyzed")
             DetailLine(label: "Recording date", value: item.recordingDateIsCertain ? "Certain" : "Estimated")
             if let exported = item.exportedMarkdownPath {
-                DetailLine(label: "Monthly note", value: exported)
+                DetailLine(label: markdownNoteTitle, value: exported)
             }
             ForEach(temporaryOperations) { operation in
                 DetailLine(label: operation.kind.replacingOccurrences(of: "_", with: " "), value: operation.destinationPath.isEmpty ? operation.sourcePath : operation.destinationPath)
@@ -194,6 +212,31 @@ struct ImportDetailView: View {
                 DetailLine(label: "Last error", value: error.technicalDetails)
             }
         }
+    }
+
+    private var technicalDetailsText: String {
+        var lines = [
+            "Source audio: \(item.originalPath)",
+            "Generated filename: \(generatedFilename)",
+            "Slug: \(item.analysis?.slug ?? "Not analyzed")",
+            "Short slug: \(item.analysis?.shortSlug ?? "Not analyzed")",
+            "Recording date: \(item.recordingDateIsCertain ? "Certain" : "Estimated")"
+        ]
+        if let managedAudioPath = item.managedAudioPath {
+            lines.insert("Legacy processing copy: \(managedAudioPath)", at: 1)
+        }
+        if let exported = item.exportedMarkdownPath {
+            lines.append("\(markdownNoteTitle): \(exported)")
+        }
+        lines.append(contentsOf: temporaryOperations.map { operation in
+            let label = operation.kind.replacingOccurrences(of: "_", with: " ")
+            let value = operation.destinationPath.isEmpty ? operation.sourcePath : operation.destinationPath
+            return "\(label): \(value)"
+        })
+        if let error = item.error {
+            lines.append("Last error: \(error.technicalDetails)")
+        }
+        return lines.joined(separator: "\n")
     }
 
     private var workflowBinding: Binding<String> {
@@ -254,6 +297,21 @@ struct ImportDetailView: View {
         return FilenamePattern.render(pattern: policy.filenamePattern, item: item, workflowName: policy.name)
     }
 
+    private var markdownNoteTitle: String {
+        let policy = store.workflowPolicy(for: item.workflow)
+        return policy.transcriptBehavior == .appendToMonthlyNote ? "Monthly note" : "Markdown note"
+    }
+
+    private var markdownNoteUnavailableText: String {
+        let policy = store.workflowPolicy(for: item.workflow)
+        switch policy.transcriptBehavior {
+        case .doNotExportTranscript:
+            return "Not generated by this workflow"
+        case .appendToMonthlyNote, .createMarkdownFile, .saveTranscriptOnly:
+            return "Created after export"
+        }
+    }
+
     private var exportedAudioPath: String? {
         item.fileOperations.last { operation in
             ["copy", "move"].contains(operation.kind) && !isCachePath(operation.destinationPath)
@@ -301,13 +359,14 @@ struct FileActionRow: View {
     var title: String
     var path: String?
     var openInsteadOfReveal: Bool
+    var unavailableText = "Not available"
 
     var body: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(.subheadline.weight(.medium))
-                Text(path ?? "Not available")
+                Text(path ?? unavailableText)
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -367,6 +426,22 @@ struct DetailLine: View {
                 .font(.caption.monospaced())
                 .textSelection(.enabled)
         }
+    }
+}
+
+struct CopyButton: View {
+    var text: String
+    var help: String
+
+    var body: some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+        } label: {
+            Image(systemName: "doc.on.doc")
+        }
+        .buttonStyle(.borderless)
+        .help(help)
     }
 }
 

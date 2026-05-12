@@ -181,12 +181,16 @@ struct SettingsView: View {
     }
 
     private func workflowBinding(for id: String) -> Binding<WorkflowPolicy>? {
-        guard let index = store.settings.workflows.firstIndex(where: { $0.id == id }) else {
+        guard store.settings.workflows.contains(where: { $0.id == id }) else {
             return nil
         }
         return Binding {
-            store.settings.workflows[index]
+            store.settings.workflows.first { $0.id == id }
+                ?? store.settings.policy(for: id)
         } set: { policy in
+            guard store.settings.workflows.contains(where: { $0.id == policy.id }) else {
+                return
+            }
             store.updateWorkflow(policy)
         }
     }

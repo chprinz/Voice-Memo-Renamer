@@ -171,6 +171,15 @@ final class ImportStore: ObservableObject {
         items.removeAll { $0.status == .imported }
     }
 
+    func clearItems(where shouldClear: (ImportItem) -> Bool) {
+        let clearedIDs = items.filter(shouldClear).map(\.id)
+        for id in clearedIDs {
+            processingTasks[id]?.cancel()
+            processingTasks[id] = nil
+        }
+        items.removeAll(where: shouldClear)
+    }
+
     var hasActiveProcessing: Bool {
         items.contains { Self.activeStatuses.contains($0.status) }
     }

@@ -56,38 +56,50 @@ struct LMStudioService {
     func analyze(transcript: String) async throws -> AnalysisMetadata {
         let model = try await loadedModel()
         let transcriptLimit = await contextAwareTranscriptLimit(for: model)
-        let prompt = analysisPrompt(for: transcript, maxCharacters: transcriptLimit)
-        let body: [String: Any] = [
-            "model": model,
-            "messages": [
-                ["role": "system", "content": "You analyze personal voice memo transcripts. Return the final answer as valid JSON in the message content. Do not include markdown or explanations."],
-                ["role": "user", "content": prompt]
-            ],
-            "temperature": 0.2,
-            "max_tokens": 1_800,
-            "response_format": ["type": "json_object"],
-            "stream": false
+        let attempts: [(prompt: String, maxTokens: Int)] = [
+            (analysisPrompt(for: transcript, maxCharacters: transcriptLimit), 900),
+            (compactAnalysisPrompt(for: transcript, maxCharacters: min(transcriptLimit, 8_000)), 650)
         ]
-        let data = try JSONSerialization.data(withJSONObject: body)
-        let responseData = try await post(path: "chat/completions", body: data, timeout: 120)
-        let response = try JSONDecoder().decode(ChatCompletionResponse.self, from: responseData)
-        guard let choice = response.choices.first else {
-            throw ProcessingFailure(message: "LM Studio returned no analysis.", details: String(data: responseData, encoding: .utf8) ?? "")
-        }
-        let content = choice.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
-        let reasoningContent = choice.message.reasoningContent?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let analysisText = content.isEmpty ? reasoningContent : content
-        do {
-            return try parseAnalysis(from: analysisText)
-        } catch {
-            if choice.finishReason == "length" {
-                throw ProcessingFailure(
-                    message: "LM Studio response was cut off before valid JSON.",
-                    details: "The selected model used the available output tokens before completing JSON. Try a non-reasoning model, increase the model context/output limit in LM Studio, or shorten the transcript. Raw response: \(String(data: responseData, encoding: .utf8) ?? analysisText)"
+        var lastJSONFailure: ProcessingFailure?
+
+        for attempt in attempts {
+            let body: [String: Any] = [
+                "model": model,
+                "messages": [
+                    ["role": "system", "content": "Return only one compact valid JSON object. No markdown. No explanations. Do not repeat words."],
+                    ["role": "user", "content": attempt.prompt]
+                ],
+                "temperature": 0.0,
+                "frequency_penalty": 0.6,
+                "max_tokens": attempt.maxTokens,
+                "response_format": ["type": "json_object"],
+                "stream": false
+            ]
+            let data = try JSONSerialization.data(withJSONObject: body)
+            let responseData = try await post(path: "chat/completions", body: data, timeout: 120)
+            let response = try JSONDecoder().decode(ChatCompletionResponse.self, from: responseData)
+            guard let choice = response.choices.first else {
+                throw ProcessingFailure(message: "LM Studio returned no analysis.", details: String(data: responseData, encoding: .utf8) ?? "")
+            }
+            let content = choice.message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            let reasoningContent = choice.message.reasoningContent?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let analysisText = content.isEmpty ? reasoningContent : content
+            do {
+                return try parseAnalysis(from: analysisText)
+            } catch {
+                let rawResponse = String(data: responseData, encoding: .utf8) ?? analysisText
+                lastJSONFailure = ProcessingFailure(
+                    message: choice.finishReason == "length" ? "LM Studio response was cut off before valid JSON." : "LM Studio returned invalid JSON.",
+                    details: "Raw response: \(rawResponse)"
                 )
             }
-            throw error
         }
+
+        if lastJSONFailure != nil {
+            return fallbackAnalysis(from: transcript)
+        }
+
+        throw ProcessingFailure(message: "LM Studio returned no analysis.", details: "")
     }
 
     private func loadedModel() async throws -> String {
@@ -119,12 +131,14 @@ struct LMStudioService {
         - Schreibe kein Markdown, keine Analyse und keine Gedankenschritte.
         - Deutsch.
         - title: klarer natürlicher Titel, nicht generisch.
-        - slug: ausführlich und beschreibend, 5-12 Wörter falls sinnvoll, klein, bindestriche, keine Umlaute.
-        - short_slug: 2-4 prägnante Wörter aus dem slug.
-        - summary: kurze, konkrete Zusammenfassung in 2-4 Sätzen.
-        - themes: 3-8 Tags/Themen.
-        - mood: optional.
-        - suggested_workflow: optional, einer von obsidianJournal, obsidianInbox.
+        - title: maximal 80 Zeichen.
+        - slug: 5-12 Wörter, maximal 90 Zeichen, klein, bindestriche, keine Umlaute, keine Wiederholungen.
+        - short_slug: 2-4 prägnante Wörter aus dem slug, maximal 45 Zeichen.
+        - summary: kurze, konkrete Zusammenfassung in 2 Sätzen, maximal 420 Zeichen.
+        - themes: 3-6 Tags/Themen, jedes maximal 35 Zeichen.
+        - mood: optionaler Text; falls unbekannt, leerer String.
+        - suggested_workflow: einer von obsidianJournal, obsidianInbox; falls unklar, leerer String.
+        - Gib niemals das Transkript oder lange Wortketten im JSON wieder.
 
         JSON:
         {
@@ -136,6 +150,25 @@ struct LMStudioService {
           "mood": "...",
           "suggested_workflow": "obsidianJournal"
         }
+
+        Transkript:
+        \(prepared)
+        """
+    }
+
+    private func compactAnalysisPrompt(for transcript: String, maxCharacters: Int) -> String {
+        let prepared = prepareTranscript(transcript, maxCharacters: maxCharacters)
+        return """
+        Analysiere dieses Voice-Memo-Transkript knapp. Antworte nur mit kompaktem JSON:
+        {"title":"","slug":"","short_slug":"","summary":"","themes":[],"mood":"","suggested_workflow":""}
+
+        Grenzen:
+        title <= 80 Zeichen.
+        slug <= 70 Zeichen, lowercase-kebab-case, keine Wiederholungen.
+        short_slug <= 35 Zeichen.
+        summary <= 260 Zeichen.
+        themes: max 5 kurze Strings.
+        suggested_workflow: "obsidianJournal", "obsidianInbox" oder "".
 
         Transkript:
         \(prepared)
@@ -197,16 +230,68 @@ struct LMStudioService {
         } catch {
             throw ProcessingFailure(message: "LM Studio returned invalid JSON.", details: "\(error.localizedDescription)\n\n\(json)")
         }
-        let slug = decoded.slug.slugSafe
-        let shortSlug = (decoded.shortSlug?.slugSafe.isEmpty == false ? decoded.shortSlug!.slugSafe : slug.split(separator: "-").prefix(3).joined(separator: "-"))
+        let title = decoded.title.trimmingCharacters(in: .whitespacesAndNewlines).bounded(to: 80)
+        let slug = boundedSlug(decoded.slug, fallback: title, maxComponents: 12, maxCharacters: 90)
+        let shortSlug = boundedSlug(decoded.shortSlug ?? "", fallback: slug, maxComponents: 4, maxCharacters: 45)
         return AnalysisMetadata(
-            title: decoded.title.trimmingCharacters(in: .whitespacesAndNewlines),
+            title: title.isEmpty ? "Voice Memo" : title,
             slug: slug,
             shortSlug: shortSlug,
-            summary: decoded.summary.trimmingCharacters(in: .whitespacesAndNewlines),
-            themes: decoded.themes,
-            mood: decoded.mood,
-            suggestedWorkflow: decoded.suggestedWorkflow
+            summary: decoded.summary.trimmingCharacters(in: .whitespacesAndNewlines).bounded(to: 420),
+            themes: boundedThemes(decoded.themes),
+            mood: decoded.mood?.bounded(to: 80).nilIfBlank,
+            suggestedWorkflow: decoded.suggestedWorkflow?.nilIfBlank
+        )
+    }
+
+    private func boundedSlug(_ value: String, fallback: String, maxComponents: Int, maxCharacters: Int) -> String {
+        let source = value.slugSafe.isEmpty ? fallback.slugSafe : value.slugSafe
+        var components: [String] = []
+        for component in source.split(separator: "-").map(String.init) {
+            guard components.last != component else { continue }
+            components.append(component)
+            let candidate = components.joined(separator: "-")
+            if components.count >= maxComponents || candidate.count >= maxCharacters {
+                break
+            }
+        }
+        let joined = components.joined(separator: "-")
+        return joined.isEmpty ? "voice-memo" : joined.bounded(to: maxCharacters).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+    }
+
+    private func boundedThemes(_ themes: [String]) -> [String] {
+        var seen = Set<String>()
+        let cleanedThemes: [String] = themes.compactMap { theme -> String? in
+            let value = theme.trimmingCharacters(in: .whitespacesAndNewlines).bounded(to: 35)
+            guard !value.isEmpty, !seen.contains(value.lowercased()) else { return nil }
+            seen.insert(value.lowercased())
+            return value
+        }
+        return Array(cleanedThemes.prefix(6))
+    }
+
+    private func fallbackAnalysis(from transcript: String) -> AnalysisMetadata {
+        let sentences = transcript
+            .replacingOccurrences(of: "\n", with: " ")
+            .split(whereSeparator: { ".!?".contains($0) })
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let firstSentence = sentences.first ?? transcript
+        let title = firstSentence
+            .split(separator: " ")
+            .prefix(10)
+            .joined(separator: " ")
+            .bounded(to: 80)
+        let summary = sentences.prefix(2).joined(separator: ". ").bounded(to: 420)
+        let slug = boundedSlug(title, fallback: "voice memo", maxComponents: 8, maxCharacters: 70)
+        return AnalysisMetadata(
+            title: title.isEmpty ? "Voice Memo" : title,
+            slug: slug,
+            shortSlug: boundedSlug(slug, fallback: "voice memo", maxComponents: 4, maxCharacters: 45),
+            summary: summary.isEmpty ? "Transcript was captured, but LM Studio did not return usable JSON." : summary,
+            themes: [],
+            mood: nil,
+            suggestedWorkflow: nil
         )
     }
 
@@ -573,8 +658,12 @@ final class ImportProcessor {
 
     private func temporaryProcessingCopyURL(for sourceURL: URL) throws -> URL {
         let ext = sourceURL.pathExtension.isEmpty ? "m4a" : sourceURL.pathExtension
-        let base = "\(UUID().uuidString)_\(sourceURL.deletingPathExtension().lastPathComponent.slugSafe)"
-        return AppPaths.processingCacheDirectory.appendingPathComponent(base).appendingPathExtension(ext)
+        let filename = FileNaming.filename(
+            preferredName: sourceURL.lastPathComponent,
+            fallbackBase: sourceURL.deletingPathExtension().lastPathComponent,
+            fallbackExtension: ext
+        )
+        return FileNaming.uniqueURL(in: AppPaths.processingCacheDirectory, filename: filename)
     }
 
     func export(_ id: ImportItem.ID) {

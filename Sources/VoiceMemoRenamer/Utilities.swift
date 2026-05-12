@@ -62,6 +62,11 @@ extension DateFormatter {
 }
 
 extension String {
+    var nilIfBlank: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     var slugSafe: String {
         let replacements = [
             "ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss",
@@ -76,6 +81,42 @@ extension String {
             .lowercased()
             .split(whereSeparator: { $0 == " " || $0 == "-" })
             .joined(separator: "-")
+    }
+
+    var filesystemSafeFilename: String {
+        let invalid = CharacterSet(charactersIn: "/:\\").union(.newlines).union(.controlCharacters)
+        let cleaned = String(unicodeScalars.map { invalid.contains($0) ? "-" : Character($0) })
+            .trimmingCharacters(in: CharacterSet(charactersIn: " ."))
+        return cleaned.isEmpty ? "audio" : cleaned
+    }
+
+    func bounded(to limit: Int) -> String {
+        guard count > limit else { return self }
+        return String(prefix(limit)).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+enum FileNaming {
+    static func filename(preferredName: String?, fallbackBase: String, fallbackExtension: String) -> String {
+        var filename = (preferredName?.nilIfBlank ?? fallbackBase).filesystemSafeFilename
+        let ext = URL(fileURLWithPath: filename).pathExtension
+        if ext.isEmpty {
+            filename += ".\(fallbackExtension.isEmpty ? "m4a" : fallbackExtension)"
+        }
+        return filename
+    }
+
+    static func uniqueURL(in directory: URL, filename: String) -> URL {
+        let safeFilename = filename.filesystemSafeFilename
+        let base = (safeFilename as NSString).deletingPathExtension
+        let ext = (safeFilename as NSString).pathExtension
+        var candidate = directory.appendingPathComponent(safeFilename)
+        var counter = 2
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            candidate = directory.appendingPathComponent("\(base)-\(counter)").appendingPathExtension(ext)
+            counter += 1
+        }
+        return candidate
     }
 }
 
