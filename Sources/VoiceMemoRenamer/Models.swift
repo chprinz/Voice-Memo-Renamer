@@ -321,6 +321,9 @@ struct ImportItem: Codable, Identifiable, Equatable {
     var updatedAt = Date()
     var originalFilename: String
     var originalPath: String
+    var sourceFilename: String?
+    var sourcePath: String?
+    var audioFingerprint: String?
     var managedAudioPath: String?
     var recordingDate: Date
     var recordingDateIsCertain: Bool
@@ -375,6 +378,7 @@ struct AppSettings: Codable, Equatable {
     var checkWatchFoldersAtLaunch = false
     var jprWatchFolderPath = "\(NSHomeDirectory())/Library/Mobile Documents/iCloud~com~openplanetsoftware~just-press-record/Documents"
     var archiveRelativePath = "📦 Archive/Voice Memos"
+    var importedAudioFingerprints: [String] = []
 
     enum CodingKeys: String, CodingKey {
         case macWhisperPath
@@ -393,6 +397,7 @@ struct AppSettings: Codable, Equatable {
         case checkWatchFoldersAtLaunch
         case jprWatchFolderPath
         case archiveRelativePath
+        case importedAudioFingerprints
     }
 
     init() {}
@@ -423,6 +428,7 @@ struct AppSettings: Codable, Equatable {
         checkWatchFoldersAtLaunch = try container.decodeIfPresent(Bool.self, forKey: .checkWatchFoldersAtLaunch) ?? false
         jprWatchFolderPath = try container.decodeIfPresent(String.self, forKey: .jprWatchFolderPath) ?? jprWatchFolderPath
         archiveRelativePath = try container.decodeIfPresent(String.self, forKey: .archiveRelativePath) ?? archiveRelativePath
+        importedAudioFingerprints = try container.decodeIfPresent([String].self, forKey: .importedAudioFingerprints) ?? []
         WorkflowPolicy.defaults.forEach { fallback in
             if !workflows.contains(where: { $0.id == fallback.id }) {
                 workflows.append(fallback)

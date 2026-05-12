@@ -10,7 +10,102 @@ struct MacWhisperService {
 
     func transcribe(filePath: String) async throws -> String {
         let output = try await run(arguments: ["transcribe", filePath], timeoutSeconds: timeoutSeconds)
-        return output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return formatTranscript(output)
+    }
+
+    private func formatTranscript(_ transcript: String) -> String {
+        let normalized = transcript
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return "" }
+
+        var blocks: [[String]] = [[]]
+        for line in normalized.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                if blocks.last?.isEmpty == false {
+                    blocks.append([])
+                }
+            } else {
+                blocks[blocks.count - 1].append(trimmed)
+            }
+        }
+
+        return blocks
+            .filter { !$0.isEmpty }
+            .flatMap { balancedParagraphs(from: $0.joined(separator: " ")) }
+            .joined(separator: "\n\n")
+    }
+
+    private func balancedParagraphs(from text: String) -> [String] {
+        let compacted = text.replacingOccurrences(
+            of: #"\s+"#,
+            with: " ",
+            options: .regularExpression
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !compacted.isEmpty else { return [] }
+
+        let sentences = splitSentences(compacted)
+        guard sentences.count > 1 else {
+            return wrapText(compacted, targetLength: 720)
+        }
+
+        var paragraphs: [String] = []
+        var current: [String] = []
+        var currentLength = 0
+        for sentence in sentences {
+            let nextLength = currentLength + sentence.count + (current.isEmpty ? 0 : 1)
+            if !current.isEmpty, current.count >= 4 || nextLength > 720 {
+                paragraphs.append(current.joined(separator: " "))
+                current = []
+                currentLength = 0
+            }
+            current.append(sentence)
+            currentLength += sentence.count + (current.count == 1 ? 0 : 1)
+        }
+        if !current.isEmpty {
+            paragraphs.append(current.joined(separator: " "))
+        }
+        return paragraphs
+    }
+
+    private func splitSentences(_ text: String) -> [String] {
+        var sentences: [String] = []
+        var current = ""
+        for character in text {
+            current.append(character)
+            if ".!?".contains(character) {
+                let sentence = current.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !sentence.isEmpty {
+                    sentences.append(sentence)
+                }
+                current = ""
+            }
+        }
+        let remainder = current.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !remainder.isEmpty {
+            sentences.append(remainder)
+        }
+        return sentences
+    }
+
+    private func wrapText(_ text: String, targetLength: Int) -> [String] {
+        var paragraphs: [String] = []
+        var current = ""
+        for word in text.split(separator: " ").map(String.init) {
+            if !current.isEmpty, current.count + word.count + 1 > targetLength {
+                paragraphs.append(current)
+                current = word
+            } else {
+                current = current.isEmpty ? word : "\(current) \(word)"
+            }
+        }
+        if !current.isEmpty {
+            paragraphs.append(current)
+        }
+        return paragraphs
     }
 
     private func run(arguments: [String], timeoutSeconds: Int) async throws -> String {
@@ -85,7 +180,7 @@ struct LMStudioService {
             let reasoningContent = choice.message.reasoningContent?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let analysisText = content.isEmpty ? reasoningContent : content
             do {
-                return try parseAnalysis(from: analysisText)
+                return try parseAnalysis(from: analysisText, transcript: transcript)
             } catch {
                 let rawResponse = String(data: responseData, encoding: .utf8) ?? analysisText
                 lastJSONFailure = ProcessingFailure(
@@ -172,7 +267,8 @@ struct LMStudioService {
         - title: maximal 80 Zeichen.
         - slug: 5-12 Wörter, maximal 90 Zeichen, klein, bindestriche, keine Umlaute, keine Wiederholungen.
         - short_slug: 2-4 prägnante Wörter aus dem slug, maximal 45 Zeichen.
-        - summary: kurze, konkrete Zusammenfassung in 2 Sätzen, maximal 420 Zeichen.
+        - summary: ein kurzer, klarer Satz, maximal 220 Zeichen.
+        - summary: keine Details auflisten, nur den Kern des Memos benennen.
         - themes: 3-6 Tags/Themen, jedes maximal 35 Zeichen.
         - mood: optionaler Text; falls unbekannt, leerer String.
         - suggested_workflow: einer von obsidianJournal, obsidianInbox; falls unklar, leerer String.
@@ -204,7 +300,7 @@ struct LMStudioService {
         title <= 80 Zeichen.
         slug <= 70 Zeichen, lowercase-kebab-case, keine Wiederholungen.
         short_slug <= 35 Zeichen.
-        summary <= 260 Zeichen.
+        summary <= 180 Zeichen, ein klarer Satz.
         themes: max 5 kurze Strings.
         suggested_workflow: "obsidianJournal", "obsidianInbox" oder "".
 
@@ -256,7 +352,7 @@ struct LMStudioService {
         return LMStudioLoadedContextInfo(loadedContextTokens: instance.config.contextLength)
     }
 
-    private func parseAnalysis(from content: String) throws -> AnalysisMetadata {
+    private func parseAnalysis(from content: String, transcript: String) throws -> AnalysisMetadata {
         guard let start = content.firstIndex(of: "{"), let end = content.lastIndex(of: "}") else {
             throw ProcessingFailure(message: "LM Studio did not return JSON.", details: content)
         }
@@ -268,18 +364,61 @@ struct LMStudioService {
         } catch {
             throw ProcessingFailure(message: "LM Studio returned invalid JSON.", details: "\(error.localizedDescription)\n\n\(json)")
         }
-        let title = decoded.title.trimmingCharacters(in: .whitespacesAndNewlines).bounded(to: 80)
+        let fallback = fallbackAnalysis(from: transcript)
+        let decodedTitle = decoded.title.trimmingCharacters(in: .whitespacesAndNewlines).bounded(to: 80)
+        let title = isGarbledText(decodedTitle) ? fallback.title : decodedTitle
+        let decodedSummary = boundedSummary(decoded.summary)
+        let summary = isGarbledText(decodedSummary) ? fallback.summary : decodedSummary
         let slug = boundedSlug(decoded.slug, fallback: title, maxComponents: 12, maxCharacters: 90)
         let shortSlug = boundedSlug(decoded.shortSlug ?? "", fallback: slug, maxComponents: 4, maxCharacters: 45)
         return AnalysisMetadata(
             title: title.isEmpty ? "Voice Memo" : title,
             slug: slug,
             shortSlug: shortSlug,
-            summary: decoded.summary.trimmingCharacters(in: .whitespacesAndNewlines).bounded(to: 420),
+            summary: summary,
             themes: boundedThemes(decoded.themes),
             mood: decoded.mood?.bounded(to: 80).nilIfBlank,
             suggestedWorkflow: decoded.suggestedWorkflow?.nilIfBlank
         )
+    }
+
+    private func isGarbledText(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+
+        let words = trimmed
+            .components(separatedBy: CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters))
+            .filter { !$0.isEmpty }
+
+        return words.contains { word in
+            let normalized = word
+                .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+                .lowercased()
+            return normalized.count > 55 || hasRepeatedFragment(normalized)
+        }
+    }
+
+    private func hasRepeatedFragment(_ word: String) -> Bool {
+        guard word.count >= 12 else { return false }
+        let characters = Array(word)
+        for fragmentLength in 3...12 where fragmentLength * 3 <= characters.count {
+            var index = 0
+            while index + fragmentLength * 3 <= characters.count {
+                let fragment = characters[index..<(index + fragmentLength)]
+                var repetitions = 1
+                var nextIndex = index + fragmentLength
+                while nextIndex + fragmentLength <= characters.count,
+                      Array(characters[nextIndex..<(nextIndex + fragmentLength)]) == Array(fragment) {
+                    repetitions += 1
+                    nextIndex += fragmentLength
+                }
+                if repetitions >= 3 {
+                    return true
+                }
+                index += 1
+            }
+        }
+        return false
     }
 
     private func boundedSlug(_ value: String, fallback: String, maxComponents: Int, maxCharacters: Int) -> String {
@@ -308,6 +447,16 @@ struct LMStudioService {
         return Array(cleanedThemes.prefix(6))
     }
 
+    private func boundedSummary(_ summary: String) -> String {
+        let compacted = summary.replacingOccurrences(
+            of: #"\s+"#,
+            with: " ",
+            options: .regularExpression
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        return compacted.bounded(to: 220)
+    }
+
     private func fallbackAnalysis(from transcript: String) -> AnalysisMetadata {
         let sentences = transcript
             .replacingOccurrences(of: "\n", with: " ")
@@ -320,7 +469,7 @@ struct LMStudioService {
             .prefix(10)
             .joined(separator: " ")
             .bounded(to: 80)
-        let summary = sentences.prefix(2).joined(separator: ". ").bounded(to: 420)
+        let summary = boundedSummary(sentences.first ?? "")
         let slug = boundedSlug(title, fallback: "voice memo", maxComponents: 8, maxCharacters: 70)
         return AnalysisMetadata(
             title: title.isEmpty ? "Voice Memo" : title,

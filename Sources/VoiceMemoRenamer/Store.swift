@@ -18,6 +18,7 @@ final class ImportStore: ObservableObject {
         loadSettings()
         loadItems()
         migrateLegacyWorkflowReferences()
+        backfillAudioFingerprints()
         if settings.checkWatchFoldersAtLaunch {
             Task { await scanWatchFolders() }
         }
@@ -31,12 +32,19 @@ final class ImportStore: ObservableObject {
                 sourceURL.stopAccessingSecurityScopedResource()
             }
         }
+        let fingerprint = try? AudioFingerprint.sha256(for: sourceURL)
+        if isKnownImport(sourceURL: sourceURL, fingerprint: fingerprint) {
+            return nil
+        }
         let (recordingDate, certain) = AudioInspector.recordingDate(for: sourceURL)
         let duration = await AudioInspector.duration(for: sourceURL)
 
         let item = ImportItem(
             originalFilename: sourceURL.lastPathComponent,
             originalPath: sourceURL.path,
+            sourceFilename: sourceURL.lastPathComponent,
+            sourcePath: sourceURL.path,
+            audioFingerprint: fingerprint,
             managedAudioPath: nil,
             recordingDate: recordingDate,
             recordingDateIsCertain: certain,
@@ -53,6 +61,7 @@ final class ImportStore: ObservableObject {
         var updated = item
         updated.updatedAt = Date()
         items[index] = updated
+        rememberImportedFingerprint(for: updated)
     }
 
     func item(id: ImportItem.ID) -> ImportItem? {
@@ -129,13 +138,30 @@ final class ImportStore: ObservableObject {
             let urls = enumerator.compactMap { $0 as? URL }
             for url in urls {
                 guard Self.supportedAudioExtensions.contains(url.pathExtension.lowercased()) else { continue }
-                guard !items.contains(where: { $0.originalPath == url.path }) else { continue }
                 if var imported = await addItem(from: url) {
                     imported.workflow = policy.id
                     imported.status = .new
                     update(imported)
                 }
             }
+        }
+    }
+
+    private func isKnownImport(sourceURL: URL, fingerprint: String?) -> Bool {
+        let knownFingerprint = fingerprint.map { settings.importedAudioFingerprints.contains($0) } ?? false
+        return items.contains { item in
+            item.originalPath == sourceURL.path
+                || item.sourcePath == sourceURL.path
+                || (fingerprint != nil && item.audioFingerprint == fingerprint)
+        } || knownFingerprint
+    }
+
+    private func rememberImportedFingerprint(for item: ImportItem) {
+        guard item.status == .imported, let fingerprint = item.audioFingerprint else { return }
+        guard !settings.importedAudioFingerprints.contains(fingerprint) else { return }
+        settings.importedAudioFingerprints.append(fingerprint)
+        if settings.importedAudioFingerprints.count > 5_000 {
+            settings.importedAudioFingerprints.removeFirst(settings.importedAudioFingerprints.count - 5_000)
         }
     }
 
@@ -245,6 +271,42 @@ final class ImportStore: ObservableObject {
             saveSettings()
             saveItems()
         }
+    }
+
+    private func backfillAudioFingerprints() {
+        var didChange = false
+        for index in items.indices {
+            if items[index].sourceFilename == nil {
+                items[index].sourceFilename = items[index].originalFilename
+                didChange = true
+            }
+            if items[index].sourcePath == nil {
+                items[index].sourcePath = items[index].originalPath
+                didChange = true
+            }
+            if items[index].audioFingerprint == nil,
+               let url = existingAudioURL(for: items[index]),
+               let fingerprint = try? AudioFingerprint.sha256(for: url) {
+                items[index].audioFingerprint = fingerprint
+                didChange = true
+            }
+            if items[index].status == .imported {
+                rememberImportedFingerprint(for: items[index])
+            }
+        }
+        if didChange {
+            saveItems()
+        }
+    }
+
+    private func existingAudioURL(for item: ImportItem) -> URL? {
+        let paths = [item.originalPath, item.sourcePath, item.managedAudioPath].compactMap { $0 }
+        for path in paths {
+            if FileManager.default.fileExists(atPath: path) {
+                return URL(fileURLWithPath: path)
+            }
+        }
+        return nil
     }
 
     private func directorySize(_ url: URL) -> Int64 {

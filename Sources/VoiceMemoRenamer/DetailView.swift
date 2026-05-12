@@ -194,9 +194,16 @@ struct ImportDetailView: View {
                 Spacer()
                 CopyButton(text: technicalDetailsText, help: "Copy technical details")
             }
-            DetailLine(label: "Source audio", value: item.originalPath)
+            DetailLine(label: "Original filename", value: item.sourceFilename ?? item.originalFilename)
+            if let sourcePath = item.sourcePath, sourcePath != item.originalPath {
+                DetailLine(label: "Original path", value: sourcePath)
+            }
+            DetailLine(label: "Current audio", value: item.originalPath)
             if let managedAudioPath = item.managedAudioPath {
                 DetailLine(label: "Legacy processing copy", value: managedAudioPath)
+            }
+            if let fingerprint = item.audioFingerprint {
+                DetailLine(label: "Audio fingerprint", value: fingerprint)
             }
             DetailLine(label: "Generated filename", value: generatedFilename)
             DetailLine(label: "Slug", value: item.analysis?.slug ?? "Not analyzed")
@@ -216,14 +223,21 @@ struct ImportDetailView: View {
 
     private var technicalDetailsText: String {
         var lines = [
-            "Source audio: \(item.originalPath)",
+            "Original filename: \(item.sourceFilename ?? item.originalFilename)",
+            "Current audio: \(item.originalPath)",
             "Generated filename: \(generatedFilename)",
             "Slug: \(item.analysis?.slug ?? "Not analyzed")",
             "Short slug: \(item.analysis?.shortSlug ?? "Not analyzed")",
             "Recording date: \(item.recordingDateIsCertain ? "Certain" : "Estimated")"
         ]
+        if let sourcePath = item.sourcePath, sourcePath != item.originalPath {
+            lines.insert("Original path: \(sourcePath)", at: 1)
+        }
         if let managedAudioPath = item.managedAudioPath {
-            lines.insert("Legacy processing copy: \(managedAudioPath)", at: 1)
+            lines.insert("Legacy processing copy: \(managedAudioPath)", at: min(2, lines.count))
+        }
+        if let fingerprint = item.audioFingerprint {
+            lines.append("Audio fingerprint: \(fingerprint)")
         }
         if let exported = item.exportedMarkdownPath {
             lines.append("\(markdownNoteTitle): \(exported)")
