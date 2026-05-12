@@ -9,9 +9,10 @@ struct VoiceMemoRenamerApp: App {
         WindowGroup("Voice Memo Renamer", id: "main") {
             ContentView()
                 .environmentObject(store)
-                .frame(minWidth: 980, minHeight: 640)
+                .frame(minWidth: 940, minHeight: 620)
         }
         .windowStyle(.titleBar)
+        .defaultSize(width: 1040, height: 720)
 
         MenuBarExtra("Voice Memo Renamer", systemImage: "waveform") {
             MenuBarContent()

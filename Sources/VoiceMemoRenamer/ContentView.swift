@@ -1,20 +1,33 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-enum QueueFilter: String, CaseIterable, Identifiable {
-    case all
-    case active
-    case needsAction
-    case imported
+enum QueueViewMode: String, CaseIterable, Identifiable {
+    case current
+    case history
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
-        case .all: "All"
-        case .active: "Active"
-        case .needsAction: "Needs Action"
-        case .imported: "Imported"
+        case .current: "Current"
+        case .history: "History"
+        }
+    }
+}
+
+enum CurrentStatusFilter {
+    case all
+    case needsAction
+    case needsAttention
+
+    var statuses: Set<ImportStatus> {
+        switch self {
+        case .all:
+            return []
+        case .needsAction:
+            return [.readyForReview]
+        case .needsAttention:
+            return [.needsAttention, .failed]
         }
     }
 }
@@ -48,11 +61,13 @@ enum ConnectivityState {
 
 struct ContentView: View {
     @EnvironmentObject private var store: ImportStore
-    @State private var filter: QueueFilter = .all
+    @State private var mode: QueueViewMode = .current
     @State private var inspectedItemID: ImportItem.ID?
     @State private var showingSettings = false
     @State private var showingClearConfirmation = false
-    @State private var pendingClearFilter: QueueFilter?
+    @State private var pendingClearMode: QueueViewMode?
+    @State private var pendingClearStatusFilter: CurrentStatusFilter = .all
+    @State private var currentStatusFilter: CurrentStatusFilter = .all
     @State private var isTargeted = false
     @State private var macWhisperState: ConnectivityState = .unknown
     @State private var lmStudioState: ConnectivityState = .unknown
@@ -60,9 +75,16 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            filterBar
-            Divider()
-            queue
+            if store.items.isEmpty {
+                Spacer(minLength: 28)
+                importDropZone
+                Spacer(minLength: 80)
+            } else {
+                importDropZone
+                listToolbar
+                Divider()
+                queue
+            }
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .onDrop(of: supportedTypes, isTargeted: $isTargeted) { providers in
@@ -83,7 +105,8 @@ struct ContentView: View {
                 performPendingClear()
             }
             Button("Cancel", role: .cancel) {
-                pendingClearFilter = nil
+                pendingClearMode = nil
+                pendingClearStatusFilter = .all
             }
         } message: {
             Text(clearDialogMessage)
@@ -98,29 +121,116 @@ struct ContentView: View {
             Text("Voice Memo Renamer")
                 .font(.headline)
 
-            Picker("Default Workflow", selection: defaultWorkflowBinding) {
-                ForEach(store.settings.workflows.filter(\.isEnabled)) { workflow in
-                    Text(workflow.name).tag(workflow.id)
-                }
-            }
-            .labelsHidden()
-            .frame(width: 210)
+            Spacer()
 
-            Button {
-                chooseAudioFiles()
-            } label: {
-                Label("Choose Audio", systemImage: "waveform.badge.plus")
-            }
-            .buttonStyle(.borderedProminent)
+            ServiceStatusIndicator(label: "MW", state: macWhisperState, isActive: isMacWhisperActive)
+                .help("MacWhisper CLI: \(macWhisperState.tooltip)")
+            ServiceStatusIndicator(label: "LM", state: lmStudioState, isActive: isLMStudioActive)
+                .help("LM Studio: \(lmStudioState.tooltip)")
 
             Button {
                 showingSettings = true
             } label: {
-                Image(systemName: "gearshape")
+                Label("Settings", systemImage: "gearshape")
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.bordered)
             .keyboardShortcut(",", modifiers: .command)
             .help("Settings")
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 16)
+        .padding(.bottom, 12)
+    }
+
+    private var importDropZone: some View {
+        HStack(alignment: .center, spacing: 18) {
+            ZStack {
+                Circle()
+                    .fill(isTargeted ? Color.accentColor.opacity(0.16) : Color.accentColor.opacity(0.10))
+                    .frame(width: store.items.isEmpty ? 64 : 52, height: store.items.isEmpty ? 64 : 52)
+                Image(systemName: isTargeted ? "arrow.down.doc.fill" : "waveform.badge.plus")
+                    .font(.system(size: store.items.isEmpty ? 28 : 24, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text(isTargeted ? "Drop to add audio" : "Drop audio here")
+                    .font(.title3.weight(.semibold))
+
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Button {
+                        chooseAudioFiles()
+                    } label: {
+                        Label("or Choose Audio", systemImage: "plus")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+
+                    Image(systemName: "arrow.right")
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(.secondary)
+
+                    Picker("Manual workflow", selection: defaultWorkflowBinding) {
+                        ForEach(store.settings.workflows.filter(\.isEnabled)) { workflow in
+                            Text(workflow.name).tag(workflow.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .controlSize(.large)
+                    .frame(width: 260)
+                }
+            }
+
+            Spacer(minLength: 20)
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, minHeight: store.items.isEmpty ? 168 : 104)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(isTargeted ? Color.accentColor : Color(nsColor: .separatorColor), lineWidth: isTargeted ? 2 : 1)
+        }
+        .padding(.horizontal, 20)
+        .padding(.bottom, 14)
+    }
+
+    private var listToolbar: some View {
+        HStack(alignment: .bottom, spacing: 14) {
+            QueueModeTabs(selection: modeSelection)
+
+            if needsActionCount > 0 {
+                Button {
+                    mode = .current
+                    toggleStatusFilter(.needsAction)
+                } label: {
+                    Label("\(needsActionCount) need action", systemImage: "exclamationmark.circle.fill")
+                        .font(.caption.weight(.medium))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.orange)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.orange.opacity(currentStatusFilter == .needsAction ? 0.16 : 0), in: RoundedRectangle(cornerRadius: 6))
+                .padding(.bottom, 5)
+                .help(currentStatusFilter == .needsAction ? "Show all current items" : "Show only items that need action")
+            }
+
+            if needsAttentionCount > 0 {
+                Button {
+                    mode = .current
+                    toggleStatusFilter(.needsAttention)
+                } label: {
+                    Label("\(needsAttentionCount) need attention", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption.weight(.medium))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.red)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.red.opacity(currentStatusFilter == .needsAttention ? 0.14 : 0), in: RoundedRectangle(cornerRadius: 6))
+                .padding(.bottom, 5)
+                .help(currentStatusFilter == .needsAttention ? "Show all current items" : "Show only items that need attention")
+            }
 
             Spacer()
 
@@ -133,62 +243,69 @@ struct ContentView: View {
                 .controlSize(.small)
             }
 
-            if let clearAction {
-                Button {
-                    requestClearView(clearAction.filter)
+            toolbarMenu
+
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 2)
+    }
+
+    @ViewBuilder
+    private var toolbarMenu: some View {
+        if let clearAction {
+            Menu {
+                Button(role: .destructive) {
+                    requestClearView(clearAction.mode, statusFilter: clearAction.statusFilter)
                 } label: {
                     Label(clearAction.title, systemImage: "trash")
                 }
-                .controlSize(.small)
                 .keyboardShortcut("k", modifiers: .command)
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(width: 24, height: 24)
             }
-
-            ServiceStatusIndicator(label: "MW", state: macWhisperState, isActive: isMacWhisperActive)
-                .help("MacWhisper CLI: \(macWhisperState.tooltip)")
-            ServiceStatusIndicator(label: "LM", state: lmStudioState, isActive: isLMStudioActive)
-                .help("LM Studio: \(lmStudioState.tooltip)")
+            .menuIndicator(.hidden)
+            .help("More actions")
+            .padding(.bottom, 7)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
-    }
-
-    private var filterBar: some View {
-        HStack {
-            Picker("Filter", selection: $filter) {
-                ForEach(QueueFilter.allCases) { filter in
-                    Text(filter.label).tag(filter)
-                }
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 430)
-
-            Spacer()
-        }
-        .padding(.horizontal, 20)
-        .padding(.bottom, 12)
     }
 
     private var queue: some View {
         Group {
-            if filteredItems.isEmpty {
-                EmptyQueueState(isTargeted: isTargeted)
+            if visibleItems.isEmpty {
+                EmptyQueueState(
+                    mode: mode,
+                    hasAnyItems: !store.items.isEmpty,
+                    historyCount: historyItems.count,
+                    showHistory: { mode = .history }
+                )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List(filteredItems) { item in
-                    QueueRow(
-                        item: item,
-                        policy: store.workflowPolicy(for: item.workflow),
-                        action: { handlePrimaryAction(item) },
-                        remove: { removeItem(item) }
-                    )
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        inspectedItemID = item.id
+                ScrollViewReader { proxy in
+                    List(visibleItems) { item in
+                        QueueRow(
+                            item: item,
+                            policy: store.workflowPolicy(for: item.workflow),
+                            action: { handlePrimaryAction(item) },
+                            remove: { removeItem(item) }
+                        )
+                        .id(item.id)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            inspectedItemID = item.id
+                        }
+                        .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
                     }
-                    .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
+                    .listStyle(.inset)
+                    .scrollContentBackground(.hidden)
+                    .onChange(of: visibleItems.first?.id) { id in
+                        guard let id else { return }
+                        withAnimation(.easeOut(duration: 0.18)) {
+                            proxy.scrollTo(id, anchor: .top)
+                        }
+                    }
                 }
-                .listStyle(.inset)
-                .scrollContentBackground(.hidden)
             }
         }
         .background(isTargeted ? Color.accentColor.opacity(0.08) : Color.clear)
@@ -211,32 +328,57 @@ struct ContentView: View {
         }
     }
 
-    private var filteredItems: [ImportItem] {
+    private var modeSelection: Binding<QueueViewMode> {
+        Binding {
+            mode
+        } set: { newMode in
+            mode = newMode
+            currentStatusFilter = .all
+        }
+    }
+
+    private var visibleItems: [ImportItem] {
         store.items.filter { item in
-            switch filter {
-            case .all:
-                true
-            case .active:
-                [.new, .queued, .transcribing, .transcribed, .analyzing, .importing].contains(item.status)
-            case .needsAction:
-                Self.needsActionStatuses.contains(item.status)
-            case .imported:
+            switch mode {
+            case .current:
+                item.status != .imported
+                    && (currentStatusFilter == .all || currentStatusFilter.statuses.contains(item.status))
+            case .history:
                 item.status == .imported
             }
         }
     }
 
-    private var clearAction: (filter: QueueFilter, title: String)? {
-        guard !filteredItems.isEmpty else { return nil }
-        switch filter {
-        case .all:
-            return (QueueFilter.all, "Clear View...")
-        case .active:
-            return (QueueFilter.active, "Clear Active...")
-        case .needsAction:
-            return (QueueFilter.needsAction, "Clear Needs Action...")
-        case .imported:
-            return (QueueFilter.imported, "Clear Imported")
+    private var currentItems: [ImportItem] {
+        store.items.filter { $0.status != .imported }
+    }
+
+    private var historyItems: [ImportItem] {
+        store.items.filter { $0.status == .imported }
+    }
+
+    private var needsActionCount: Int {
+        currentItems.filter { CurrentStatusFilter.needsAction.statuses.contains($0.status) }.count
+    }
+
+    private var needsAttentionCount: Int {
+        currentItems.filter { CurrentStatusFilter.needsAttention.statuses.contains($0.status) }.count
+    }
+
+    private var isNeedsActionFilterActive: Bool {
+        mode == .current && currentStatusFilter != .all
+    }
+
+    private var clearAction: (mode: QueueViewMode, title: String, statusFilter: CurrentStatusFilter)? {
+        guard !visibleItems.isEmpty else { return nil }
+        switch mode {
+        case .current:
+            if isNeedsActionFilterActive {
+                return (QueueViewMode.current, currentStatusFilter == .needsAttention ? "Clear Needs Attention..." : "Clear Needs Action...", currentStatusFilter)
+            }
+            return (QueueViewMode.current, "Clear Current...", .all)
+        case .history:
+            return (QueueViewMode.history, "Clear History", .all)
         }
     }
 
@@ -245,51 +387,58 @@ struct ContentView: View {
     }
 
     private var clearDialogButtonTitle: String {
-        switch pendingClearFilter ?? .all {
-        case .all: "Clear View"
-        case .active: "Clear Active"
-        case .needsAction: "Clear Needs Action"
-        case .imported: "Clear Imported"
+        switch pendingClearMode ?? .current {
+        case .current:
+            switch pendingClearStatusFilter {
+            case .all: "Clear Current"
+            case .needsAction: "Clear Needs Action"
+            case .needsAttention: "Clear Needs Attention"
+            }
+        case .history: "Clear History"
         }
     }
 
     private var clearDialogMessage: String {
-        let count = clearCount(for: pendingClearFilter ?? .all)
+        let count = clearCount(for: pendingClearMode ?? .current)
         let noun = count == 1 ? "item" : "items"
-        switch pendingClearFilter ?? .all {
-        case .all, .imported:
-            return "This removes \(count) visible \(noun) from the list. Source and exported files are not deleted."
-        case .active:
-            return "This cancels and removes \(count) active \(noun) from the list. Source files are not deleted."
-        case .needsAction:
-            return "This removes \(count) \(noun) waiting for review or fixes. Source and exported files are not deleted."
+        switch pendingClearMode ?? .current {
+        case .current:
+            if pendingClearStatusFilter != .all {
+                return "This removes \(count) visible \(noun) waiting for review or fixes. Source and exported files are not deleted."
+            }
+            return "This cancels active processing and removes \(count) current \(noun) from the list. Source files are not deleted."
+        case .history:
+            return "This removes \(count) imported \(noun) from history. Source and exported files are not deleted."
         }
     }
 
-    private func requestClearView(_ filter: QueueFilter) {
-        pendingClearFilter = filter
-        switch filter {
-        case .all, .active, .needsAction:
+    private func requestClearView(_ mode: QueueViewMode, statusFilter: CurrentStatusFilter) {
+        pendingClearMode = mode
+        pendingClearStatusFilter = statusFilter
+        switch mode {
+        case .current:
             showingClearConfirmation = true
-        case .imported:
+        case .history:
             performPendingClear()
         }
     }
 
     private func performPendingClear() {
-        let filter = pendingClearFilter ?? .all
-        switch filter {
-        case .all:
-            let visibleIDs = Set(filteredItems.map(\.id))
-            store.clearItems { visibleIDs.contains($0.id) }
-        case .active:
-            store.clearItems { Self.activeStatuses.contains($0.status) }
-        case .needsAction:
-            store.clearItems { Self.needsActionStatuses.contains($0.status) }
-        case .imported:
+        let mode = pendingClearMode ?? .current
+        switch mode {
+        case .current:
+            if pendingClearStatusFilter != .all {
+                let statuses = pendingClearStatusFilter.statuses
+                store.clearItems { statuses.contains($0.status) }
+            } else {
+                store.clearItems { $0.status != .imported }
+            }
+        case .history:
             store.clearItems { $0.status == .imported }
         }
-        pendingClearFilter = nil
+        pendingClearMode = nil
+        pendingClearStatusFilter = .all
+        currentStatusFilter = .all
     }
 
     private func removeItem(_ item: ImportItem) {
@@ -299,19 +448,30 @@ struct ContentView: View {
         }
     }
 
-    private func clearCount(for filter: QueueFilter) -> Int {
-        switch filter {
-        case .all, .imported:
-            return filteredItems.count
-        case .active:
-            return store.items.filter { Self.activeStatuses.contains($0.status) }.count
-        case .needsAction:
-            return store.items.filter { Self.needsActionStatuses.contains($0.status) }.count
+    private func clearCount(for mode: QueueViewMode) -> Int {
+        switch mode {
+        case .current:
+            if pendingClearStatusFilter != .all {
+                return visibleItems.count
+            }
+            return currentItems.count
+        case .history:
+            return historyItems.count
         }
     }
 
-    private static let activeStatuses: Set<ImportStatus> = [.new, .queued, .transcribing, .transcribed, .analyzing, .importing]
-    private static let needsActionStatuses: Set<ImportStatus> = [.readyForReview, .needsAttention, .failed]
+    private func toggleStatusFilter(_ filter: CurrentStatusFilter) {
+        currentStatusFilter = currentStatusFilter == filter ? .all : filter
+    }
+
+    private func modeLabel(for mode: QueueViewMode) -> String {
+        switch mode {
+        case .current:
+            return "Current"
+        case .history:
+            return "History"
+        }
+    }
 
     private var supportedTypes: [UTType] {
         [.fileURL, .audio, .mpeg4Audio, .mp3, .wav, .aiff, .mpeg4Movie, .quickTimeMovie]
@@ -386,9 +546,8 @@ struct ContentView: View {
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
-        if filter != .all {
-            filter = .active
-        }
+        mode = .current
+        currentStatusFilter = .all
         providers.forEach(importDroppedProvider)
         return true
     }
@@ -427,6 +586,8 @@ struct ContentView: View {
     private func importAudioFile(_ url: URL) {
         Task { @MainActor in
             if let imported = await store.addItem(from: url) {
+                mode = .current
+                currentStatusFilter = .all
                 ImportProcessor(store: store).process(imported.id)
             }
         }
@@ -459,6 +620,8 @@ struct ContentView: View {
 
         if panel.runModal() == .OK {
             Task { @MainActor in
+                mode = .current
+                currentStatusFilter = .all
                 for url in panel.urls {
                     if let imported = await store.addItem(from: url) {
                         ImportProcessor(store: store).process(imported.id)
@@ -526,22 +689,96 @@ struct ServiceStatusIndicator: View {
 }
 
 struct EmptyQueueState: View {
-    var isTargeted: Bool
+    var mode: QueueViewMode
+    var hasAnyItems: Bool
+    var historyCount: Int
+    var showHistory: () -> Void
 
     var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: isTargeted ? "arrow.down.doc" : "waveform.badge.plus")
-                .font(.system(size: 40, weight: .regular))
-                .foregroundStyle(isTargeted ? Color.accentColor : Color.secondary)
-            Text(isTargeted ? "Drop to add audio" : "Drop an audio file")
+        VStack(spacing: 14) {
+            Image(systemName: icon)
+                .font(.system(size: 34, weight: .regular))
+                .foregroundStyle(Color.secondary)
+            Text(title)
                 .font(.title3.weight(.semibold))
-            Text("The queue is the workspace. New recordings from watch folders appear here when the app starts.")
+            Text(message)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
+            if shouldShowHistoryButton {
+                Button {
+                    showHistory()
+                } label: {
+                    Label("Show History", systemImage: "clock.arrow.circlepath")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
         }
         .padding(40)
+    }
+
+    private var icon: String {
+        switch mode {
+        case .current:
+            return hasAnyItems ? "tray" : "arrow.up.doc"
+        case .history:
+            return "clock.arrow.circlepath"
+        }
+    }
+
+    private var title: String {
+        switch mode {
+        case .current:
+            return hasAnyItems ? "No current imports" : "Ready for audio"
+        case .history:
+            return "No history yet"
+        }
+    }
+
+    private var message: String {
+        switch mode {
+        case .current:
+            if historyCount > 0 {
+                return "\(historyCount) imported \(historyCount == 1 ? "recording is" : "recordings are") in History."
+            }
+            return hasAnyItems
+                ? "Imported recordings move to History."
+                : "Use the drop zone above or choose audio files to start."
+        case .history:
+            return "Imported recordings collect here after they leave Current."
+        }
+    }
+
+    private var shouldShowHistoryButton: Bool {
+        mode == .current && historyCount > 0
+    }
+}
+
+struct QueueModeTabs: View {
+    @Binding var selection: QueueViewMode
+
+    var body: some View {
+        HStack(spacing: 20) {
+            ForEach(QueueViewMode.allCases) { mode in
+                Button {
+                    selection = mode
+                } label: {
+                    VStack(spacing: 8) {
+                        Text(mode.label)
+                            .font(.subheadline.weight(selection == mode ? .semibold : .medium))
+                            .foregroundStyle(selection == mode ? .primary : .secondary)
+                        Capsule()
+                            .fill(selection == mode ? Color.accentColor : Color.clear)
+                            .frame(width: 28, height: 2)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .accessibilityLabel("List")
     }
 }
 
@@ -550,6 +787,7 @@ struct QueueRow: View {
     var policy: WorkflowPolicy
     var action: () -> Void
     var remove: () -> Void
+    @State private var isHovering = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -583,10 +821,11 @@ struct QueueRow: View {
                         .lineLimit(1)
                 }
 
-                Text("\(policy.name) · \(plan)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    MetadataTag(text: policy.name)
+                    MetadataTag(text: plan)
+                }
+                .padding(.top, 2)
             }
 
             Spacer(minLength: 16)
@@ -595,6 +834,10 @@ struct QueueRow: View {
             removeButton
         }
         .padding(.vertical, 4)
+        .padding(.horizontal, 6)
+        .background(Color.primary.opacity(isHovering ? 0.045 : 0), in: RoundedRectangle(cornerRadius: 6))
+        .onHover { isHovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: isHovering)
     }
 
     private var removeButton: some View {
@@ -603,12 +846,16 @@ struct QueueRow: View {
         } label: {
             Image(systemName: "xmark.circle.fill")
                 .symbolRenderingMode(.hierarchical)
+                .font(.system(size: 15, weight: .semibold))
+                .frame(width: 24, height: 24)
         }
         .buttonStyle(.borderless)
-        .controlSize(.small)
         .foregroundStyle(.secondary)
-        .padding(.top, 3)
+        .padding(.top, 0)
         .help("Remove from list")
+        .opacity(isHovering ? 1 : 0)
+        .allowsHitTesting(isHovering)
+        .animation(.easeOut(duration: 0.12), value: isHovering)
     }
 
     @ViewBuilder
@@ -679,6 +926,20 @@ struct QueueRow: View {
         case .transcribing, .analyzing, .importing, .queued: .orange
         default: .secondary
         }
+    }
+}
+
+struct MetadataTag: View {
+    var text: String
+
+    var body: some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(Color(nsColor: .quaternaryLabelColor).opacity(0.18), in: RoundedRectangle(cornerRadius: 5))
     }
 }
 
