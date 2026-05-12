@@ -36,8 +36,14 @@ Use the Xcode app toolchain if Command Line Tools are selected:
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build
 ```
 
-Run:
+To build a launchable `.app` bundle with the current executable, plist, and app icon:
 
 ```bash
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift run VoiceMemoRenamer
+Scripts/build-app.sh
+```
+
+Run the app bundle:
+
+```bash
+open -n .build/VoiceMemoRenamer.app
 ```
