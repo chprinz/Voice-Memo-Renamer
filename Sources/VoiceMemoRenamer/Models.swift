@@ -155,6 +155,7 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
     var isEnabled: Bool
     var sourceBehavior: SourceBehavior
     var watchFolderPath: String
+    var includeWatchFolderSubfolders: Bool
     var destination: WorkflowDestination
     var destinationPath: String
     var audioDestinationPath: String
@@ -174,6 +175,7 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         case isEnabled
         case sourceBehavior
         case watchFolderPath
+        case includeWatchFolderSubfolders
         case destination
         case destinationPath
         case audioDestinationPath
@@ -192,6 +194,7 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         isEnabled: Bool,
         sourceBehavior: SourceBehavior,
         watchFolderPath: String,
+        includeWatchFolderSubfolders: Bool = false,
         destination: WorkflowDestination,
         destinationPath: String,
         audioDestinationPath: String,
@@ -206,6 +209,7 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         self.isEnabled = isEnabled
         self.sourceBehavior = sourceBehavior
         self.watchFolderPath = watchFolderPath
+        self.includeWatchFolderSubfolders = includeWatchFolderSubfolders
         self.destination = destination
         self.destinationPath = destinationPath
         self.audioDestinationPath = audioDestinationPath
@@ -223,6 +227,7 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
         sourceBehavior = try container.decodeIfPresent(SourceBehavior.self, forKey: .sourceBehavior) ?? .manualOnly
         watchFolderPath = try container.decodeIfPresent(String.self, forKey: .watchFolderPath) ?? ""
+        includeWatchFolderSubfolders = try container.decodeIfPresent(Bool.self, forKey: .includeWatchFolderSubfolders) ?? true
         destination = try container.decodeIfPresent(WorkflowDestination.self, forKey: .destination) ?? .projectFolder
         destinationPath = try container.decodeIfPresent(String.self, forKey: .destinationPath) ?? ""
         audioDestinationPath = try container.decodeIfPresent(String.self, forKey: .audioDestinationPath) ?? ""
@@ -250,6 +255,7 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         try container.encode(isEnabled, forKey: .isEnabled)
         try container.encode(sourceBehavior, forKey: .sourceBehavior)
         try container.encode(watchFolderPath, forKey: .watchFolderPath)
+        try container.encode(includeWatchFolderSubfolders, forKey: .includeWatchFolderSubfolders)
         try container.encode(destination, forKey: .destination)
         try container.encode(destinationPath, forKey: .destinationPath)
         try container.encode(audioDestinationPath, forKey: .audioDestinationPath)

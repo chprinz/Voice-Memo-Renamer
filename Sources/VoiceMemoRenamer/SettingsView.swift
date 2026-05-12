@@ -365,6 +365,7 @@ struct WorkflowPolicyEditor: View {
             }
             if policy.sourceBehavior.usesWatchFolder {
                 FolderPathRow(title: "Watch folder", path: $policy.watchFolderPath)
+                Toggle("Include subfolders", isOn: $policy.includeWatchFolderSubfolders)
             }
 
             Picker("Transcript", selection: $policy.transcriptBehavior) {

@@ -130,10 +130,14 @@ final class ImportStore: ObservableObject {
         guard !policies.isEmpty else { return }
         for policy in policies {
             let folder = URL(fileURLWithPath: NSString(string: policy.watchFolderPath).expandingTildeInPath)
+            var options: FileManager.DirectoryEnumerationOptions = [.skipsHiddenFiles]
+            if !policy.includeWatchFolderSubfolders {
+                options.insert(.skipsSubdirectoryDescendants)
+            }
             guard let enumerator = FileManager.default.enumerator(
                 at: folder,
                 includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsHiddenFiles]
+                options: options
             ) else { continue }
             let urls = enumerator.compactMap { $0 as? URL }
             for url in urls {
@@ -243,8 +247,22 @@ final class ImportStore: ObservableObject {
 
     private func workflowForSource(_ sourceURL: URL) -> String {
         settings.workflows.first { policy in
-            policy.usesWatchFolder && sourceURL.path.hasPrefix(NSString(string: policy.watchFolderPath).expandingTildeInPath)
+            isSource(sourceURL, inWatchFolderFor: policy)
         }?.id ?? settings.defaultWorkflow
+    }
+
+    private func isSource(_ sourceURL: URL, inWatchFolderFor policy: WorkflowPolicy) -> Bool {
+        guard policy.usesWatchFolder else { return false }
+        let folderPath = NSString(string: policy.watchFolderPath).expandingTildeInPath
+        let standardizedFolderPath = URL(fileURLWithPath: folderPath).standardizedFileURL.path
+        let standardizedSourceURL = sourceURL.standardizedFileURL
+        let sourcePath = standardizedSourceURL.path
+
+        if policy.includeWatchFolderSubfolders {
+            return sourcePath == standardizedFolderPath
+                || sourcePath.hasPrefix(standardizedFolderPath + "/")
+        }
+        return standardizedSourceURL.deletingLastPathComponent().path == standardizedFolderPath
     }
 
     private func migrateLegacyWorkflowReferences() {

@@ -119,6 +119,7 @@ struct ContentView: View {
                 Image(systemName: "gearshape")
             }
             .buttonStyle(.borderless)
+            .keyboardShortcut(",", modifiers: .command)
             .help("Settings")
 
             Spacer()
@@ -134,11 +135,12 @@ struct ContentView: View {
 
             if let clearAction {
                 Button {
-                    requestClear(clearAction.filter)
+                    requestClearView(clearAction.filter)
                 } label: {
                     Label(clearAction.title, systemImage: "trash")
                 }
                 .controlSize(.small)
+                .keyboardShortcut("k", modifiers: .command)
             }
 
             ServiceStatusIndicator(label: "MW", state: macWhisperState, isActive: isMacWhisperActive)
@@ -176,7 +178,8 @@ struct ContentView: View {
                     QueueRow(
                         item: item,
                         policy: store.workflowPolicy(for: item.workflow),
-                        action: { handlePrimaryAction(item) }
+                        action: { handlePrimaryAction(item) },
+                        remove: { removeItem(item) }
                     )
                     .contentShape(Rectangle())
                     .onTapGesture {
@@ -224,26 +227,26 @@ struct ContentView: View {
     }
 
     private var clearAction: (filter: QueueFilter, title: String)? {
+        guard !filteredItems.isEmpty else { return nil }
         switch filter {
         case .all:
-            store.items.contains { $0.status == .imported } ? (.all, "Clear Completed") : nil
+            return (QueueFilter.all, "Clear View...")
         case .active:
-            filteredItems.isEmpty ? nil : (.active, "Clear Active...")
+            return (QueueFilter.active, "Clear Active...")
         case .needsAction:
-            filteredItems.isEmpty ? nil : (.needsAction, "Clear Needs Action...")
+            return (QueueFilter.needsAction, "Clear Needs Action...")
         case .imported:
-            filteredItems.isEmpty ? nil : (.imported, "Clear Imported")
+            return (QueueFilter.imported, "Clear Imported")
         }
     }
 
     private var clearDialogTitle: String {
-        let filter = pendingClearFilter ?? .all
         return "\(clearDialogButtonTitle)?"
     }
 
     private var clearDialogButtonTitle: String {
         switch pendingClearFilter ?? .all {
-        case .all: "Clear Completed"
+        case .all: "Clear View"
         case .active: "Clear Active"
         case .needsAction: "Clear Needs Action"
         case .imported: "Clear Imported"
@@ -255,7 +258,7 @@ struct ContentView: View {
         let noun = count == 1 ? "item" : "items"
         switch pendingClearFilter ?? .all {
         case .all, .imported:
-            return "This removes \(count) imported \(noun) from the list. Exported files are not deleted."
+            return "This removes \(count) visible \(noun) from the list. Source and exported files are not deleted."
         case .active:
             return "This cancels and removes \(count) active \(noun) from the list. Source files are not deleted."
         case .needsAction:
@@ -263,7 +266,7 @@ struct ContentView: View {
         }
     }
 
-    private func requestClear(_ filter: QueueFilter) {
+    private func requestClearView(_ filter: QueueFilter) {
         pendingClearFilter = filter
         switch filter {
         case .all, .active, .needsAction:
@@ -277,7 +280,8 @@ struct ContentView: View {
         let filter = pendingClearFilter ?? .all
         switch filter {
         case .all:
-            store.clearItems { $0.status == .imported }
+            let visibleIDs = Set(filteredItems.map(\.id))
+            store.clearItems { visibleIDs.contains($0.id) }
         case .active:
             store.clearItems { Self.activeStatuses.contains($0.status) }
         case .needsAction:
@@ -288,10 +292,17 @@ struct ContentView: View {
         pendingClearFilter = nil
     }
 
+    private func removeItem(_ item: ImportItem) {
+        store.clearItems { $0.id == item.id }
+        if inspectedItemID == item.id {
+            inspectedItemID = nil
+        }
+    }
+
     private func clearCount(for filter: QueueFilter) -> Int {
         switch filter {
         case .all, .imported:
-            return store.items.filter { $0.status == .imported }.count
+            return filteredItems.count
         case .active:
             return store.items.filter { Self.activeStatuses.contains($0.status) }.count
         case .needsAction:
@@ -538,6 +549,7 @@ struct QueueRow: View {
     var item: ImportItem
     var policy: WorkflowPolicy
     var action: () -> Void
+    var remove: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -580,8 +592,23 @@ struct QueueRow: View {
             Spacer(minLength: 16)
 
             primaryActionButton
+            removeButton
         }
         .padding(.vertical, 4)
+    }
+
+    private var removeButton: some View {
+        Button(role: .destructive) {
+            remove()
+        } label: {
+            Image(systemName: "xmark.circle.fill")
+                .symbolRenderingMode(.hierarchical)
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+        .foregroundStyle(.secondary)
+        .padding(.top, 3)
+        .help("Remove from list")
     }
 
     @ViewBuilder
