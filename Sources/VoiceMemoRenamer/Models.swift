@@ -301,8 +301,16 @@ struct AppSettings: Codable, Equatable {
         voiceInboxRelativePath = try container.decodeIfPresent(String.self, forKey: .voiceInboxRelativePath) ?? voiceInboxRelativePath
         journalAudioRelativePath = try container.decodeIfPresent(String.self, forKey: .journalAudioRelativePath) ?? journalAudioRelativePath
         monthlyNotesRelativePath = try container.decodeIfPresent(String.self, forKey: .monthlyNotesRelativePath) ?? monthlyNotesRelativePath
-        defaultWorkflow = try container.decodeIfPresent(String.self, forKey: .defaultWorkflow) ?? defaultWorkflow
+        defaultWorkflow = WorkflowPolicy.canonicalID(
+            try container.decodeIfPresent(String.self, forKey: .defaultWorkflow) ?? defaultWorkflow
+        )
         workflows = try container.decodeIfPresent([WorkflowPolicy].self, forKey: .workflows) ?? WorkflowPolicy.defaults
+        workflows = workflows.map { policy in
+            var migrated = policy
+            migrated.id = WorkflowPolicy.canonicalID(policy.id)
+            migrated.name = WorkflowPolicy.canonicalName(for: migrated.id, currentName: migrated.name)
+            return migrated
+        }
         maxTranscriptCharactersForAnalysis = try container.decodeIfPresent(Int.self, forKey: .maxTranscriptCharactersForAnalysis) ?? maxTranscriptCharactersForAnalysis
         transcriptionTimeoutSeconds = try container.decodeIfPresent(Int.self, forKey: .transcriptionTimeoutSeconds) ?? transcriptionTimeoutSeconds
         retryLimit = try container.decodeIfPresent(Int.self, forKey: .retryLimit) ?? retryLimit
@@ -315,15 +323,51 @@ struct AppSettings: Codable, Equatable {
                 workflows.append(fallback)
             }
         }
+        if !workflows.contains(where: { $0.id == defaultWorkflow }) {
+            defaultWorkflow = StandardWorkflowID.obsidianJournal
+        }
     }
 
     func policy(for workflow: String) -> WorkflowPolicy {
-        workflows.first(where: { $0.id == workflow }) ?? WorkflowPolicy.defaults.first(where: { $0.id == workflow })!
+        let canonicalID = WorkflowPolicy.canonicalID(workflow)
+        if let policy = workflows.first(where: { $0.id == canonicalID }) {
+            return policy
+        }
+        if let policy = WorkflowPolicy.defaults.first(where: { $0.id == canonicalID }) {
+            return policy
+        }
+        return workflows.first ?? WorkflowPolicy.defaults[0]
     }
 }
 
 extension WorkflowPolicy {
     static let defaultFilenamePattern = "{yyyy}-{MM}-{dd}_{HH}-{mm}_{shortSlug}"
+
+    static func canonicalID(_ id: String) -> String {
+        switch id {
+        case "projectFolder":
+            return StandardWorkflowID.transcriptOnly
+        case "fieldRecordingLibrary":
+            return StandardWorkflowID.obsidianInbox
+        default:
+            return id
+        }
+    }
+
+    static func canonicalName(for id: String, currentName: String) -> String {
+        switch id {
+        case StandardWorkflowID.obsidianJournal:
+            return "Obsidian Journal"
+        case StandardWorkflowID.obsidianInbox:
+            return "Obsidian Inbox"
+        case StandardWorkflowID.transcriptOnly:
+            return "Transcript Only"
+        case StandardWorkflowID.renameInPlace:
+            return "Rename in Place"
+        default:
+            return currentName
+        }
+    }
 
     static let defaults: [WorkflowPolicy] = [
         WorkflowPolicy(

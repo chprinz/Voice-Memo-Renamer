@@ -17,6 +17,7 @@ final class ImportStore: ObservableObject {
         ensureDirectories()
         loadSettings()
         loadItems()
+        migrateLegacyWorkflowReferences()
         if settings.checkWatchFoldersAtLaunch {
             Task { await scanWatchFolders() }
         }
@@ -94,6 +95,8 @@ final class ImportStore: ObservableObject {
     }
 
     func updateWorkflow(_ policy: WorkflowPolicy) {
+        var policy = policy
+        policy.id = WorkflowPolicy.canonicalID(policy.id)
         if let index = settings.workflows.firstIndex(where: { $0.id == policy.id }) {
             settings.workflows[index] = policy
         } else {
@@ -242,6 +245,32 @@ final class ImportStore: ObservableObject {
         settings.workflows.first { policy in
             policy.usesWatchFolder && sourceURL.path.hasPrefix(NSString(string: policy.watchFolderPath).expandingTildeInPath)
         }?.id ?? settings.defaultWorkflow
+    }
+
+    private func migrateLegacyWorkflowReferences() {
+        var didChange = false
+        let migratedDefault = WorkflowPolicy.canonicalID(settings.defaultWorkflow)
+        if settings.defaultWorkflow != migratedDefault || !settings.workflows.contains(where: { $0.id == migratedDefault }) {
+            settings.defaultWorkflow = settings.workflows.contains(where: { $0.id == migratedDefault })
+                ? migratedDefault
+                : StandardWorkflowID.obsidianJournal
+            didChange = true
+        }
+
+        for index in items.indices {
+            let migratedID = WorkflowPolicy.canonicalID(items[index].workflow)
+            if items[index].workflow != migratedID || !settings.workflows.contains(where: { $0.id == migratedID }) {
+                items[index].workflow = settings.workflows.contains(where: { $0.id == migratedID })
+                    ? migratedID
+                    : settings.defaultWorkflow
+                didChange = true
+            }
+        }
+
+        if didChange {
+            saveSettings()
+            saveItems()
+        }
     }
 
     private func directorySize(_ url: URL) -> Int64 {
