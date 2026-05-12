@@ -17,6 +17,7 @@ final class ImportStore: ObservableObject {
         ensureDirectories()
         loadSettings()
         loadItems()
+        recoverInterruptedItems()
         migrateLegacyWorkflowReferences()
         backfillAudioFingerprints()
         if shouldScanWatchFoldersAtLaunch {
@@ -316,6 +317,23 @@ final class ImportStore: ObservableObject {
             if items[index].status == .imported {
                 rememberImportedFingerprint(for: items[index])
             }
+        }
+        if didChange {
+            saveItems()
+        }
+    }
+
+    private func recoverInterruptedItems() {
+        var didChange = false
+        for index in items.indices where Self.activeStatuses.contains(items[index].status) {
+            let interruptedStatus = items[index].status
+            items[index].status = .needsAttention
+            items[index].error = ProcessingError(
+                message: "Processing was interrupted.",
+                technicalDetails: "The app closed or crashed while this item was \(interruptedStatus.label.lowercased()). Start it again when MacWhisper and LM Studio are ready.",
+                occurredAt: Date()
+            )
+            didChange = true
         }
         if didChange {
             saveItems()

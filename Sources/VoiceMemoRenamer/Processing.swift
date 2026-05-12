@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 struct MacWhisperService {
@@ -109,37 +110,139 @@ struct MacWhisperService {
     }
 
     private func run(arguments: [String], timeoutSeconds: Int) async throws -> String {
-        try await withThrowingTaskGroup(of: String.self) { group in
-            group.addTask {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: executablePath)
-                process.arguments = arguments
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = arguments
 
-                let stdout = Pipe()
-                let stderr = Pipe()
-                process.standardOutput = stdout
-                process.standardError = stderr
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
 
-                try process.run()
-                process.waitUntilExit()
+        let stdoutBuffer = PipeOutputBuffer(fileHandle: stdout.fileHandleForReading)
+        let stderrBuffer = PipeOutputBuffer(fileHandle: stderr.fileHandleForReading)
+        let timeoutState = ProcessTimeoutState()
+        let effectiveTimeout = max(1, timeoutSeconds)
 
-                let output = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                let errorOutput = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                guard process.terminationStatus == 0 else {
-                    throw ProcessingFailure(message: "MacWhisper failed.", details: errorOutput.isEmpty ? output : errorOutput)
-                }
-                return output
-            }
-
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(timeoutSeconds) * 1_000_000_000)
-                throw ProcessingFailure(message: "MacWhisper timed out.", details: "No result after \(timeoutSeconds) seconds.")
-            }
-
-            let result = try await group.next() ?? ""
-            group.cancelAll()
-            return result
+        do {
+            try process.run()
+        } catch {
+            stdoutBuffer.finish(readRemaining: false)
+            stderrBuffer.finish(readRemaining: false)
+            throw ProcessingFailure(
+                message: "Could not start MacWhisper.",
+                details: "\(executablePath)\n\(error.localizedDescription)"
+            )
         }
+
+        let waitTask = Task.detached {
+            process.waitUntilExit()
+            return process.terminationStatus
+        }
+
+        let timeoutTask = Task {
+            do {
+                try await Task.sleep(nanoseconds: UInt64(effectiveTimeout) * 1_000_000_000)
+            } catch {
+                return
+            }
+            timeoutState.markTimedOut()
+            Self.stop(process)
+        }
+
+        let terminationStatus = await withTaskCancellationHandler {
+            await waitTask.value
+        } onCancel: {
+            Self.stop(process)
+        }
+
+        timeoutTask.cancel()
+        stdoutBuffer.finish()
+        stderrBuffer.finish()
+
+        if timeoutState.didTimeOut {
+            throw ProcessingFailure(message: "MacWhisper timed out.", details: "No result after \(effectiveTimeout) seconds.")
+        }
+
+        try Task.checkCancellation()
+
+        let output = stdoutBuffer.string()
+        let errorOutput = stderrBuffer.string()
+        guard terminationStatus == 0 else {
+            throw ProcessingFailure(message: "MacWhisper failed.", details: errorOutput.isEmpty ? output : errorOutput)
+        }
+        return output
+    }
+
+    private static func stop(_ process: Process) {
+        guard process.isRunning else { return }
+        let pid = process.processIdentifier
+        process.terminate()
+        Task.detached {
+            do {
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+            } catch {
+                return
+            }
+            if process.isRunning {
+                Darwin.kill(pid, SIGKILL)
+            }
+        }
+    }
+}
+
+private final class PipeOutputBuffer {
+    private let fileHandle: FileHandle
+    private let lock = NSLock()
+    private var data = Data()
+
+    init(fileHandle: FileHandle) {
+        self.fileHandle = fileHandle
+        fileHandle.readabilityHandler = { [weak self] handle in
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else { return }
+            self?.append(chunk)
+        }
+    }
+
+    func finish(readRemaining: Bool = true) {
+        fileHandle.readabilityHandler = nil
+        guard readRemaining else { return }
+        let remaining = fileHandle.availableData
+        if !remaining.isEmpty {
+            append(remaining)
+        }
+    }
+
+    func string() -> String {
+        lock.lock()
+        let snapshot = data
+        lock.unlock()
+        return String(data: snapshot, encoding: .utf8) ?? ""
+    }
+
+    private func append(_ chunk: Data) {
+        lock.lock()
+        data.append(chunk)
+        lock.unlock()
+    }
+}
+
+private final class ProcessTimeoutState {
+    private let lock = NSLock()
+    private var timedOut = false
+
+    var didTimeOut: Bool {
+        lock.lock()
+        let value = timedOut
+        lock.unlock()
+        return value
+    }
+
+    func markTimedOut() {
+        lock.lock()
+        timedOut = true
+        lock.unlock()
     }
 }
 
@@ -310,8 +413,9 @@ struct LMStudioService {
     }
 
     private func prepareTranscript(_ transcript: String, maxCharacters: Int) -> String {
-        guard transcript.count > maxCharacters else { return transcript }
-        let sectionLength = maxCharacters / 3
+        let safeMaxCharacters = max(1, maxCharacters)
+        guard transcript.count > safeMaxCharacters else { return transcript }
+        let sectionLength = max(1, safeMaxCharacters / 3)
         let start = String(transcript.prefix(sectionLength))
         let end = String(transcript.suffix(sectionLength))
         let middleStart = transcript.index(transcript.startIndex, offsetBy: max(0, transcript.count / 2 - sectionLength / 2))
@@ -525,8 +629,10 @@ struct LMStudioService {
     }
 }
 
+@MainActor
 struct ObsidianJournalExporter {
     var settings: AppSettings
+    var checkpoint: ((ImportItem) -> Void)?
 
     func export(_ item: ImportItem) throws -> ImportItem {
         let policy = settings.policy(for: item.workflow)
@@ -555,6 +661,7 @@ struct ObsidianJournalExporter {
                 destinationPath: destinationAudioURL.path,
                 occurredAt: Date()
             ))
+            checkpoint?(updated)
         }
 
         if policy.audioFileBehavior == .renameInPlace {
@@ -572,6 +679,7 @@ struct ObsidianJournalExporter {
                 destinationPath: destinationURL.path,
                 occurredAt: Date()
             ))
+            checkpoint?(updated)
         }
 
         if let markdownURL = try exportTranscriptIfNeeded(
@@ -587,6 +695,7 @@ struct ObsidianJournalExporter {
                 destinationPath: markdownURL.path,
                 occurredAt: Date()
             ))
+            checkpoint?(updated)
         }
 
         updated.status = .imported
@@ -716,11 +825,11 @@ final class ImportProcessor {
         let task = Task {
             defer { store.finishProcessingTask(for: id) }
             guard var item = store.item(id: id) else { return }
-            guard item.retryCount < store.settings.retryLimit else {
+            guard item.status == .needsAttention || item.status == .failed || item.retryCount < store.settings.retryLimit else {
                 item.status = .needsAttention
                 item.error = ProcessingError(
                     message: "Retry limit reached.",
-                    technicalDetails: "This item already failed \(item.retryCount) time(s). Check MacWhisper or LM Studio settings before trying again.",
+                    technicalDetails: "This item already failed \(item.retryCount) time(s). Check MacWhisper or LM Studio settings before starting it again.",
                     occurredAt: Date()
                 )
                 store.update(item)
@@ -745,8 +854,16 @@ final class ImportProcessor {
                 item.status = .analyzing
                 store.update(item)
 
+                guard let lmStudioURL = URL(string: store.settings.lmStudioBaseURL),
+                      lmStudioURL.scheme != nil,
+                      lmStudioURL.host != nil else {
+                    throw ProcessingFailure(
+                        message: "Invalid LM Studio URL.",
+                        details: store.settings.lmStudioBaseURL
+                    )
+                }
                 let lm = LMStudioService(
-                    baseURL: URL(string: store.settings.lmStudioBaseURL) ?? URL(string: "http://localhost:1234/v1")!,
+                    baseURL: lmStudioURL,
                     modelID: store.settings.lmStudioModelID,
                     maxTranscriptCharacters: store.settings.maxTranscriptCharactersForAnalysis
                 )
@@ -790,7 +907,10 @@ final class ImportProcessor {
         let sourceURL = try audioSourceURL(for: item)
         do {
             return (try await whisper.transcribe(filePath: sourceURL.path), item)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
+            try Task.checkCancellation()
             let tempURL = try temporaryProcessingCopyURL(for: sourceURL)
             try FileManager.default.createDirectory(at: AppPaths.processingCacheDirectory, withIntermediateDirectories: true)
             try FileManager.default.copyItem(at: sourceURL, to: tempURL)
@@ -860,17 +980,20 @@ final class ImportProcessor {
         store.update(item)
 
         do {
-            let exporter = ObsidianJournalExporter(settings: store.settings)
+            let exporter = ObsidianJournalExporter(settings: store.settings) { [store] checkpoint in
+                store.update(checkpoint)
+            }
             let exported = try exporter.export(item)
             store.update(exported)
         } catch {
-            item.status = .needsAttention
-            item.error = ProcessingError(
+            var failed = store.item(id: id) ?? item
+            failed.status = .needsAttention
+            failed.error = ProcessingError(
                 message: (error as? ProcessingFailure)?.message ?? "Import failed.",
                 technicalDetails: (error as? ProcessingFailure)?.details ?? error.localizedDescription,
                 occurredAt: Date()
             )
-            store.update(item)
+            store.update(failed)
         }
     }
 
