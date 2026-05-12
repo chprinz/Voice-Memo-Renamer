@@ -21,16 +21,39 @@ struct VoiceMemoRenamerApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var appearanceObserver: NSObjectProtocol?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
-        if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
-           let icon = NSImage(contentsOf: iconURL) {
-            NSApp.applicationIconImage = icon
+        updateApplicationIcon()
+        appearanceObserver = DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("AppleInterfaceThemeChangedNotification"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.updateApplicationIcon()
         }
         NSApp.activate(ignoringOtherApps: true)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
             NSApp.windows.first?.makeKeyAndOrderFront(nil)
         }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        if let appearanceObserver {
+            DistributedNotificationCenter.default().removeObserver(appearanceObserver)
+        }
+    }
+
+    private func updateApplicationIcon() {
+        let isDarkMode = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let iconName = isDarkMode ? "AppIconDark" : "AppIcon"
+        guard let iconURL = Bundle.main.url(forResource: iconName, withExtension: "icns")
+            ?? Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+            let icon = NSImage(contentsOf: iconURL) else {
+            return
+        }
+        NSApp.applicationIconImage = icon
     }
 }
 

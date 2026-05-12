@@ -386,6 +386,8 @@ struct WorkflowPolicyEditor: View {
                 FolderPathRow(title: "Audio folder", path: $policy.audioDestinationPath)
             }
 
+            Toggle("Review before export", isOn: reviewBeforeExportBinding)
+
             TextField("Filename pattern", text: $policy.filenamePattern)
             HStack {
                 Text(FilenamePattern.preview(pattern: policy.filenamePattern, workflowName: policy.name))
@@ -394,6 +396,14 @@ struct WorkflowPolicyEditor: View {
                 Spacer()
                 PopoverHelp()
             }
+        }
+    }
+
+    private var reviewBeforeExportBinding: Binding<Bool> {
+        Binding {
+            policy.reviewBehavior != .autoExportWhenReady
+        } set: { shouldReview in
+            policy.reviewBehavior = shouldReview ? .requireReview : .autoExportWhenReady
         }
     }
 

@@ -6,42 +6,56 @@ struct ImportDetailView: View {
     @State private var selectedTab = "summary"
     @State private var showDetails = false
     @State private var isHoveringTranscript = false
+    @State private var copyToastMessage: String?
     var item: ImportItem
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-                .padding(24)
+        ZStack(alignment: .bottom) {
+            VStack(alignment: .leading, spacing: 0) {
+                header
+                    .padding(24)
 
-            Divider()
+                Divider()
 
-            Picker("", selection: $selectedTab) {
-                Text("Summary").tag("summary")
-                Text("Transcript").tag("transcript")
-                Text("Files").tag("files")
-            }
-            .pickerStyle(.segmented)
-            .padding([.horizontal, .top], 24)
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    if selectedTab == "summary" {
-                        summarySection
-                    } else if selectedTab == "transcript" {
-                        transcriptSection
-                    } else {
-                        filesSection
-                    }
-
-                    DisclosureGroup("Technical details", isExpanded: $showDetails) {
-                        technicalDetails
-                            .padding(.top, 8)
-                    }
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                Picker("", selection: $selectedTab) {
+                    Text("Summary").tag("summary")
+                    Text("Transcript").tag("transcript")
+                    Text("Files").tag("files")
                 }
-                .padding(24)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .pickerStyle(.segmented)
+                .padding([.horizontal, .top], 24)
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        if selectedTab == "summary" {
+                            summarySection
+                        } else if selectedTab == "transcript" {
+                            transcriptSection
+                        } else {
+                            filesSection
+                        }
+
+                        DisclosureGroup("Technical details", isExpanded: $showDetails) {
+                            technicalDetails
+                                .padding(.top, 8)
+                        }
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    }
+                    .padding(24)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+
+            if let copyToastMessage {
+                Text(copyToastMessage)
+                    .font(.caption.weight(.medium))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(.regularMaterial, in: Capsule())
+                    .shadow(radius: 8)
+                    .padding(.bottom, 18)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
     }
@@ -159,7 +173,12 @@ struct ImportDetailView: View {
 
     private var filesSection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            FileActionRow(title: "Source audio", path: item.originalPath, openInsteadOfReveal: false)
+            FileActionRow(
+                title: "Source audio",
+                path: sourceAudioPath,
+                openInsteadOfReveal: false,
+                unavailableText: sourceAudioUnavailableText
+            )
             if let exportedAudio = exportedAudioPath {
                 FileActionRow(title: "Exported audio", path: exportedAudio, openInsteadOfReveal: false)
             }
@@ -181,7 +200,9 @@ struct ImportDetailView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             if isHoveringTranscript, let transcript = item.transcript, !transcript.isEmpty {
-                CopyButton(text: transcript, help: "Copy transcript")
+                CopyButton(text: transcript, help: "Copy transcript") {
+                    showCopyToast("Transcript copied")
+                }
                     .padding(6)
             }
         }
@@ -192,10 +213,12 @@ struct ImportDetailView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Spacer()
-                CopyButton(text: technicalDetailsText, help: "Copy technical details")
+                CopyButton(text: technicalDetailsText, help: "Copy technical details") {
+                    showCopyToast("Details copied")
+                }
             }
             DetailLine(label: "Original filename", value: item.sourceFilename ?? item.originalFilename)
-            if let sourcePath = item.sourcePath, sourcePath != item.originalPath {
+            if let sourcePath = item.sourcePath, sourcePath != item.originalPath, !isCachePath(sourcePath) {
                 DetailLine(label: "Original path", value: sourcePath)
             }
             DetailLine(label: "Current audio", value: item.originalPath)
@@ -231,7 +254,8 @@ struct ImportDetailView: View {
             "Recording date: \(item.recordingDateIsCertain ? "Certain" : "Estimated")"
         ]
         if let sourcePath = item.sourcePath, sourcePath != item.originalPath {
-            lines.insert("Original path: \(sourcePath)", at: 1)
+            let label = isCachePath(sourcePath) ? "Imported temporary source" : "Original path"
+            lines.insert("\(label): \(sourcePath)", at: 1)
         }
         if let managedAudioPath = item.managedAudioPath {
             lines.insert("Legacy processing copy: \(managedAudioPath)", at: min(2, lines.count))
@@ -332,6 +356,22 @@ struct ImportDetailView: View {
         }?.destinationPath
     }
 
+    private var sourceAudioPath: String? {
+        let candidates = [item.sourcePath, item.originalPath].compactMap { $0 }
+        return candidates.first { path in
+            !isCachePath(path) || FileManager.default.fileExists(atPath: path)
+        }
+    }
+
+    private var sourceAudioUnavailableText: String {
+        if let sourcePath = item.sourcePath ?? Optional(item.originalPath),
+           isCachePath(sourcePath),
+           !FileManager.default.fileExists(atPath: sourcePath) {
+            return "Temporary import copy was cleared. Original path was not provided."
+        }
+        return "Not available"
+    }
+
     private var temporaryOperations: [FileOperationRecord] {
         item.fileOperations.filter { operation in
             operation.kind.contains("temporary_processing") || operation.kind == "clear_cache"
@@ -342,6 +382,20 @@ struct ImportDetailView: View {
         path.hasPrefix(AppPaths.managedAudioDirectory.path)
             || path.hasPrefix(AppPaths.processingCacheDirectory.path)
             || path.hasPrefix(AppPaths.dropImportDirectory.path)
+    }
+
+    private func showCopyToast(_ message: String) {
+        withAnimation(.easeOut(duration: 0.12)) {
+            copyToastMessage = message
+        }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            if copyToastMessage == message {
+                withAnimation(.easeIn(duration: 0.16)) {
+                    copyToastMessage = nil
+                }
+            }
+        }
     }
 }
 
@@ -446,11 +500,13 @@ struct DetailLine: View {
 struct CopyButton: View {
     var text: String
     var help: String
+    var copied: () -> Void = {}
 
     var body: some View {
         Button {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
+            copied()
         } label: {
             Image(systemName: "doc.on.doc")
         }
