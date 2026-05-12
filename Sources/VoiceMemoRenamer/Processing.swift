@@ -871,7 +871,10 @@ final class ImportProcessor {
                 try Task.checkCancellation()
                 item = store.item(id: id) ?? item
                 item.analysis = analysis
-                if let suggested = analysis.suggestedWorkflow {
+                if let watchFolderWorkflowID = watchFolderWorkflowID(for: item) {
+                    item.workflow = watchFolderWorkflowID
+                } else if let suggested = analysis.suggestedWorkflow,
+                   shouldApplySuggestedWorkflow(suggested, to: item) {
                     item.workflow = suggested
                 }
                 item.status = .readyForReview
@@ -975,6 +978,9 @@ final class ImportProcessor {
 
     func export(_ id: ImportItem.ID) {
         guard var item = store.item(id: id) else { return }
+        if let watchFolderWorkflowID = watchFolderWorkflowID(for: item) {
+            item.workflow = watchFolderWorkflowID
+        }
         item.status = .importing
         item.error = nil
         store.update(item)
@@ -1008,6 +1014,47 @@ final class ImportProcessor {
             let titleIsMissing = item.analysis?.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
             return item.recordingDateIsCertain && !titleIsMissing
         }
+    }
+
+    private func shouldApplySuggestedWorkflow(_ suggestedWorkflow: String, to item: ImportItem) -> Bool {
+        let suggestedID = WorkflowPolicy.canonicalID(suggestedWorkflow)
+        guard !suggestedID.isEmpty else { return false }
+        guard store.settings.workflows.contains(where: { $0.id == suggestedID && $0.isEnabled }) else {
+            return false
+        }
+
+        if watchFolderWorkflowID(for: item) != nil {
+            return false
+        }
+        return item.workflow != suggestedID
+    }
+
+    private func watchFolderWorkflowID(for item: ImportItem) -> String? {
+        let currentPolicy = store.workflowPolicy(for: item.workflow)
+        if itemMatchesWatchFolderPolicy(item, currentPolicy) {
+            return currentPolicy.id
+        }
+        return store.settings.workflows.first { itemMatchesWatchFolderPolicy(item, $0) }?.id
+    }
+
+    private func itemMatchesWatchFolderPolicy(_ item: ImportItem, _ policy: WorkflowPolicy) -> Bool {
+        guard policy.usesWatchFolder else { return false }
+        return [item.sourcePath, item.originalPath]
+            .compactMap { $0 }
+            .contains { isPath($0, inWatchFolderFor: policy) }
+    }
+
+    private func isPath(_ path: String, inWatchFolderFor policy: WorkflowPolicy) -> Bool {
+        let folderPath = NSString(string: policy.watchFolderPath).expandingTildeInPath
+        let standardizedFolderPath = URL(fileURLWithPath: folderPath).standardizedFileURL.path
+        let standardizedSourceURL = URL(fileURLWithPath: path).standardizedFileURL
+        let sourcePath = standardizedSourceURL.path
+
+        if policy.includeWatchFolderSubfolders {
+            return sourcePath == standardizedFolderPath
+                || sourcePath.hasPrefix(standardizedFolderPath + "/")
+        }
+        return standardizedSourceURL.deletingLastPathComponent().path == standardizedFolderPath
     }
 }
 

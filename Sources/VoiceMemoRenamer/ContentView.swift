@@ -157,7 +157,7 @@ struct ContentView: View {
                 Text(isTargeted ? "Drop to add audio" : "Drop audio here")
                     .font(.title3.weight(.semibold))
 
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                HStack(alignment: .center, spacing: 8) {
                     Button {
                         chooseAudioFiles()
                     } label: {
@@ -167,8 +167,11 @@ struct ContentView: View {
                     .controlSize(.large)
 
                     Image(systemName: "arrow.right")
-                        .font(.body.weight(.medium))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 18, height: 30)
+                        .padding(.leading, 3)
+                        .padding(.trailing, 1)
 
                     Picker("Manual workflow", selection: defaultWorkflowBinding) {
                         ForEach(store.settings.workflows.filter(\.isEnabled)) { workflow in
@@ -177,7 +180,7 @@ struct ContentView: View {
                     }
                     .labelsHidden()
                     .controlSize(.large)
-                    .frame(width: 260)
+                    .frame(width: 268, height: 30)
                 }
             }
 
