@@ -451,7 +451,8 @@ final class ImportProcessor {
     }
 
     func process(_ id: ImportItem.ID) {
-        Task {
+        let task = Task {
+            defer { store.finishProcessingTask(for: id) }
             guard var item = store.item(id: id), let path = item.managedAudioPath else { return }
             guard item.retryCount < store.settings.retryLimit else {
                 item.status = .needsAttention
@@ -464,12 +465,14 @@ final class ImportProcessor {
                 return
             }
             do {
+                try Task.checkCancellation()
                 item.status = .transcribing
                 item.error = nil
                 store.update(item)
 
                 let whisper = MacWhisperService(executablePath: store.settings.macWhisperPath, timeoutSeconds: store.settings.transcriptionTimeoutSeconds)
                 let transcript = try await whisper.transcribe(filePath: path)
+                try Task.checkCancellation()
                 guard !transcript.isEmpty else {
                     throw ProcessingFailure(message: "MacWhisper returned an empty transcript.", details: path)
                 }
@@ -484,6 +487,7 @@ final class ImportProcessor {
                     maxTranscriptCharacters: store.settings.maxTranscriptCharactersForAnalysis
                 )
                 let analysis = try await lm.analyze(transcript: transcript)
+                try Task.checkCancellation()
                 item = store.item(id: id) ?? item
                 item.analysis = analysis
                 if let suggested = analysis.suggestedWorkflow {
@@ -494,6 +498,15 @@ final class ImportProcessor {
                 if shouldAutoExport(item) {
                     export(id)
                 }
+            } catch is CancellationError {
+                item = store.item(id: id) ?? item
+                item.status = .needsAttention
+                item.error = ProcessingError(
+                    message: "Processing cancelled.",
+                    technicalDetails: "Cancelled by the user before the workflow finished.",
+                    occurredAt: Date()
+                )
+                store.update(item)
             } catch {
                 item = store.item(id: id) ?? item
                 item.retryCount += 1
@@ -506,6 +519,7 @@ final class ImportProcessor {
                 store.update(item)
             }
         }
+        store.registerProcessingTask(task, for: id)
     }
 
     func export(_ id: ImportItem.ID) {

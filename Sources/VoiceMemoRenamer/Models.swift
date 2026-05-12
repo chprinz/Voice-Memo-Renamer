@@ -251,6 +251,8 @@ struct ImportItem: Codable, Identifiable, Equatable {
 
     var primaryActionTitle: String? {
         switch status {
+        case .new:
+            return "Start"
         case .readyForReview:
             return "Approve"
         case .failed, .needsAttention:
@@ -277,6 +279,7 @@ struct AppSettings: Codable, Equatable {
     var transcriptionTimeoutSeconds = 900
     var retryLimit = 2
     var processingStoragePolicy: ProcessingStoragePolicy = .deleteAfterSuccessfulExport
+    var checkWatchFoldersAtLaunch = false
     var jprWatchFolderPath = "\(NSHomeDirectory())/Library/Mobile Documents/iCloud~com~openplanetsoftware~just-press-record/Documents"
     var archiveRelativePath = "📦 Archive/Voice Memos"
 
@@ -294,6 +297,7 @@ struct AppSettings: Codable, Equatable {
         case transcriptionTimeoutSeconds
         case retryLimit
         case processingStoragePolicy
+        case checkWatchFoldersAtLaunch
         case jprWatchFolderPath
         case archiveRelativePath
     }
@@ -315,6 +319,7 @@ struct AppSettings: Codable, Equatable {
         transcriptionTimeoutSeconds = try container.decodeIfPresent(Int.self, forKey: .transcriptionTimeoutSeconds) ?? transcriptionTimeoutSeconds
         retryLimit = try container.decodeIfPresent(Int.self, forKey: .retryLimit) ?? retryLimit
         processingStoragePolicy = try container.decodeIfPresent(ProcessingStoragePolicy.self, forKey: .processingStoragePolicy) ?? processingStoragePolicy
+        checkWatchFoldersAtLaunch = try container.decodeIfPresent(Bool.self, forKey: .checkWatchFoldersAtLaunch) ?? false
         jprWatchFolderPath = try container.decodeIfPresent(String.self, forKey: .jprWatchFolderPath) ?? jprWatchFolderPath
         archiveRelativePath = try container.decodeIfPresent(String.self, forKey: .archiveRelativePath) ?? archiveRelativePath
         WorkflowPolicy.defaults.forEach { fallback in
@@ -337,7 +342,7 @@ extension WorkflowPolicy {
             id: .obsidianJournal,
             name: "Obsidian Journal",
             isEnabled: true,
-            sourceBehavior: .manualAndWatchFolder,
+            sourceBehavior: .manualOnly,
             watchFolderPath: "\(NSHomeDirectory())/Library/Mobile Documents/iCloud~com~openplanetsoftware~just-press-record/Documents",
             destination: .obsidianJournal,
             destinationPath: "🖋️ Journal",

@@ -215,6 +215,8 @@ struct ImportDetailView: View {
 
     private func handlePrimaryAction() {
         switch item.status {
+        case .new:
+            ImportProcessor(store: store).process(item.id)
         case .readyForReview:
             ImportProcessor(store: store).export(item.id)
         case .needsAttention, .failed:

@@ -108,6 +108,24 @@ struct ContentView: View {
 
             Spacer()
 
+            if store.hasActiveProcessing {
+                Button {
+                    store.cancelActiveProcessing()
+                } label: {
+                    Label("Cancel Active", systemImage: "xmark.circle")
+                }
+                .controlSize(.small)
+            }
+
+            if store.items.contains(where: { $0.status == .imported }) {
+                Button {
+                    store.clearCompletedItems()
+                } label: {
+                    Label("Clear Completed", systemImage: "checkmark.circle")
+                }
+                .controlSize(.small)
+            }
+
             ConnectivityIcon(systemName: "waveform.path.ecg", state: macWhisperState)
                 .help("MacWhisper CLI: \(macWhisperState.tooltip)")
             ConnectivityIcon(systemName: "brain.head.profile", state: lmStudioState)
@@ -229,6 +247,8 @@ struct ContentView: View {
 
     private func handlePrimaryAction(_ item: ImportItem) {
         switch item.status {
+        case .new:
+            ImportProcessor(store: store).process(item.id)
         case .readyForReview:
             ImportProcessor(store: store).export(item.id)
         case .failed, .needsAttention:
@@ -438,6 +458,8 @@ struct QueueRow: View {
         switch item.status {
         case .queued, .transcribing, .analyzing:
             "Processing transcript and routing details."
+        case .new:
+            "Ready to process when you choose Try Again or open the item."
         case .failed, .needsAttention:
             item.error?.message ?? "This item needs attention."
         default:

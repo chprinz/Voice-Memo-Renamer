@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var store: ImportStore
+    @Environment(\.dismiss) private var dismiss
     @State private var selectedWorkflowID: WorkflowID = .obsidianJournal
     @State private var macWhisperStatus: String = "Not checked"
     @State private var isChecking = false
@@ -13,11 +14,22 @@ struct SettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Settings")
-                .font(.title2.weight(.semibold))
-                .padding(.horizontal, 28)
-                .padding(.top, 24)
-                .padding(.bottom, 10)
+            HStack {
+                Text("Settings")
+                    .font(.title2.weight(.semibold))
+                Spacer()
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help("Close Settings")
+            }
+            .padding(.horizontal, 28)
+            .padding(.top, 24)
+            .padding(.bottom, 10)
 
             ScrollView {
                 Form {
@@ -69,6 +81,7 @@ struct SettingsView: View {
 
     private var sourcesSection: some View {
         Section("Sources / Watch Folders") {
+            Toggle("Check watch folders when the app starts", isOn: $store.settings.checkWatchFoldersAtLaunch)
             TextField("JPR watch folder", text: $store.settings.jprWatchFolderPath)
             Button {
                 Task { await store.scanWatchFolders() }

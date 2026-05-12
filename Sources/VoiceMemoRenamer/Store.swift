@@ -11,11 +11,15 @@ final class ImportStore: ObservableObject {
         didSet { saveSettings() }
     }
 
+    private var processingTasks: [ImportItem.ID: Task<Void, Never>] = [:]
+
     init() {
         ensureDirectories()
         loadSettings()
         loadItems()
-        Task { await scanWatchFolders() }
+        if settings.checkWatchFoldersAtLaunch {
+            Task { await scanWatchFolders() }
+        }
     }
 
     func addItem(from sourceURL: URL) async -> ImportItem? {
@@ -116,11 +120,47 @@ final class ImportStore: ObservableObject {
                 guard !items.contains(where: { $0.originalPath == url.path }) else { continue }
                 if var imported = await addItem(from: url) {
                     imported.workflow = policy.id
+                    imported.status = .new
                     update(imported)
-                    ImportProcessor(store: self).process(imported.id)
                 }
             }
         }
+    }
+
+    func registerProcessingTask(_ task: Task<Void, Never>, for id: ImportItem.ID) {
+        processingTasks[id]?.cancel()
+        processingTasks[id] = task
+    }
+
+    func finishProcessingTask(for id: ImportItem.ID) {
+        processingTasks[id] = nil
+    }
+
+    func cancelProcessing(_ id: ImportItem.ID) {
+        processingTasks[id]?.cancel()
+        processingTasks[id] = nil
+        guard var item = item(id: id), Self.activeStatuses.contains(item.status) else { return }
+        item.status = .needsAttention
+        item.error = ProcessingError(
+            message: "Processing cancelled.",
+            technicalDetails: "Cancelled by the user before the workflow finished.",
+            occurredAt: Date()
+        )
+        update(item)
+    }
+
+    func cancelActiveProcessing() {
+        for id in items.filter({ Self.activeStatuses.contains($0.status) }).map(\.id) {
+            cancelProcessing(id)
+        }
+    }
+
+    func clearCompletedItems() {
+        items.removeAll { $0.status == .imported }
+    }
+
+    var hasActiveProcessing: Bool {
+        items.contains { Self.activeStatuses.contains($0.status) }
     }
 
     func appStorageUsage() -> Int64 {
@@ -184,6 +224,7 @@ final class ImportStore: ObservableObject {
     }
 
     private static let supportedAudioExtensions = Set(["m4a", "mp3", "wav", "aiff", "aif", "caf", "mp4", "mov"])
+    private static let activeStatuses: Set<ImportStatus> = [.queued, .transcribing, .transcribed, .analyzing, .importing]
 
     private func loadItems() {
         guard let data = try? Data(contentsOf: AppPaths.storeURL) else { return }
