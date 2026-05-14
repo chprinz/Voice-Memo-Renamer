@@ -18,6 +18,20 @@ The app currently assumes:
 - You use Obsidian, or you configure one of the non-Obsidian workflows in the app settings.
 - You are comfortable with a source-available, private-use project that was built around one person's workflow.
 
+## Screenshots
+
+Current queue with transcription analysis in progress:
+
+![Voice Memo Renamer current queue with analysis in progress](docs/images/current-analysis.jpg)
+
+History view with imported voice memos:
+
+![Voice Memo Renamer history view with finished imports](docs/images/history-imported.jpg)
+
+Settings for workflows, storage, MacWhisper, and LM Studio:
+
+![Voice Memo Renamer settings view](docs/images/settings-workflows.jpg)
+
 ## What It Does
 
 - Drag and drop `.m4a`, `.mp3`, and `.wav` audio files.
