@@ -164,6 +164,8 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
     var reviewBehavior: ReviewBehavior
     var filenamePattern: String
     var processingStoragePolicy: ProcessingStoragePolicy
+    var compressAudioOnExport: Bool
+    var normalizeAudioOnExport: Bool
 
     var usesWatchFolder: Bool {
         isEnabled && sourceBehavior.usesWatchFolder && !watchFolderPath.isEmpty
@@ -186,6 +188,8 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         case reviewBehavior
         case filenamePattern
         case processingStoragePolicy
+        case compressAudioOnExport
+        case normalizeAudioOnExport
     }
 
     init(
@@ -202,7 +206,9 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         audioFileBehavior: AudioFileBehavior,
         reviewBehavior: ReviewBehavior,
         filenamePattern: String,
-        processingStoragePolicy: ProcessingStoragePolicy
+        processingStoragePolicy: ProcessingStoragePolicy,
+        compressAudioOnExport: Bool = false,
+        normalizeAudioOnExport: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -218,6 +224,8 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         self.reviewBehavior = reviewBehavior
         self.filenamePattern = filenamePattern
         self.processingStoragePolicy = processingStoragePolicy
+        self.compressAudioOnExport = compressAudioOnExport
+        self.normalizeAudioOnExport = normalizeAudioOnExport
     }
 
     init(from decoder: Decoder) throws {
@@ -235,6 +243,8 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         reviewBehavior = try container.decodeIfPresent(ReviewBehavior.self, forKey: .reviewBehavior) ?? .requireReview
         filenamePattern = try container.decodeIfPresent(String.self, forKey: .filenamePattern) ?? WorkflowPolicy.defaultFilenamePattern
         processingStoragePolicy = try container.decodeIfPresent(ProcessingStoragePolicy.self, forKey: .processingStoragePolicy) ?? .deleteAfterSuccessfulExport
+        compressAudioOnExport = try container.decodeIfPresent(Bool.self, forKey: .compressAudioOnExport) ?? false
+        normalizeAudioOnExport = try container.decodeIfPresent(Bool.self, forKey: .normalizeAudioOnExport) ?? false
 
         if let behavior = try container.decodeIfPresent(AudioFileBehavior.self, forKey: .audioFileBehavior) {
             audioFileBehavior = behavior
@@ -264,6 +274,8 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         try container.encode(reviewBehavior, forKey: .reviewBehavior)
         try container.encode(filenamePattern, forKey: .filenamePattern)
         try container.encode(processingStoragePolicy, forKey: .processingStoragePolicy)
+        try container.encode(compressAudioOnExport, forKey: .compressAudioOnExport)
+        try container.encode(normalizeAudioOnExport, forKey: .normalizeAudioOnExport)
     }
 
     private static func migratedAudioFileBehavior(
@@ -369,6 +381,7 @@ struct ImportItem: Codable, Identifiable, Equatable {
 
 struct AppSettings: Codable, Equatable {
     var macWhisperPath = "/usr/local/bin/mw"
+    var ffmpegPath = "/opt/homebrew/bin/ffmpeg"
     var lmStudioBaseURL = "http://localhost:1234/v1"
     var lmStudioModelID: String?
     var vaultRootPath = "\(NSHomeDirectory())/Library/Mobile Documents/iCloud~md~obsidian/Documents/Notes"
@@ -388,6 +401,7 @@ struct AppSettings: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case macWhisperPath
+        case ffmpegPath
         case lmStudioBaseURL
         case lmStudioModelID
         case vaultRootPath
@@ -411,6 +425,7 @@ struct AppSettings: Codable, Equatable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         macWhisperPath = try container.decodeIfPresent(String.self, forKey: .macWhisperPath) ?? macWhisperPath
+        ffmpegPath = try container.decodeIfPresent(String.self, forKey: .ffmpegPath) ?? ffmpegPath
         lmStudioBaseURL = try container.decodeIfPresent(String.self, forKey: .lmStudioBaseURL) ?? lmStudioBaseURL
         lmStudioModelID = try container.decodeIfPresent(String.self, forKey: .lmStudioModelID)
         vaultRootPath = try container.decodeIfPresent(String.self, forKey: .vaultRootPath) ?? vaultRootPath

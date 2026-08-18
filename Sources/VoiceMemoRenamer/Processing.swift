@@ -256,8 +256,8 @@ struct LMStudioService {
     var maxTranscriptCharacters: Int
 
     func analyze(transcript: String) async throws -> AnalysisMetadata {
-        let model = try await loadedModel()
-        let transcriptLimit = await contextAwareTranscriptLimit(for: model)
+        let (model, contextTokens) = try await loadedModel()
+        let transcriptLimit = contextTokens.map { min(maxTranscriptCharacters, safeTranscriptCharacterLimit(for: $0)) } ?? maxTranscriptCharacters
         let attempts: [(prompt: String, maxTokens: Int)] = [
             (analysisPrompt(for: transcript, maxCharacters: transcriptLimit), 900),
             (compactAnalysisPrompt(for: transcript, maxCharacters: min(transcriptLimit, 8_000)), 650)
@@ -342,23 +342,21 @@ struct LMStudioService {
         ]
     }
 
-    private func loadedModel() async throws -> String {
-        let data = try await get(path: "models", timeout: 10)
-        let response = try JSONDecoder().decode(ModelsResponse.self, from: data)
-        if let modelID, !modelID.isEmpty, response.data.contains(where: { $0.id == modelID }) {
-            return modelID
+    private func loadedModel() async throws -> (id: String, contextTokens: Int?) {
+        let data = try await nativeGet(path: "models", timeout: 10)
+        let decoded = try JSONDecoder().decode(LMStudioNativeModelsResponse.self, from: data)
+        let loadedModels = decoded.models.filter { !$0.loadedInstances.isEmpty }
+        guard !loadedModels.isEmpty else {
+            throw ProcessingFailure(
+                message: "No LM Studio model is loaded.",
+                details: "Open LM Studio and load a local model, then try again."
+            )
         }
-        guard let model = response.data.first?.id else {
-            throw ProcessingFailure(message: "No LM Studio model is loaded.", details: "Open LM Studio and load a local model.")
-        }
-        return model
-    }
-
-    private func contextAwareTranscriptLimit(for modelID: String) async -> Int {
-        guard let info = try? await loadedContextInfo(for: modelID) else {
-            return maxTranscriptCharacters
-        }
-        return min(maxTranscriptCharacters, safeTranscriptCharacterLimit(for: info.loadedContextTokens))
+        let selectedModel = loadedModels.first { model in
+            model.key == modelID || model.loadedInstances.contains { $0.id == modelID }
+        } ?? loadedModels[0]
+        let instance = selectedModel.loadedInstances[0]
+        return (instance.id, instance.config.contextLength)
     }
 
     private func analysisPrompt(for transcript: String, maxCharacters: Int) -> String {
@@ -491,23 +489,6 @@ struct LMStudioService {
         let reservedTokens = 2_500
         let availableTokens = max(2_000, contextTokens - reservedTokens)
         return max(6_000, availableTokens * 3)
-    }
-
-    private func loadedContextInfo(for modelID: String) async throws -> LMStudioLoadedContextInfo? {
-        let requestURL = nativeBaseURL.appendingPathComponent("models")
-        var request = URLRequest(url: requestURL)
-        request.timeoutInterval = 10
-        let (data, response) = try await data(for: request)
-        try validate(response: response, data: data, fallbackMessage: "LM Studio model metadata request failed.")
-        let decoded = try JSONDecoder().decode(LMStudioNativeModelsResponse.self, from: data)
-        let loadedModels = decoded.models.filter { !$0.loadedInstances.isEmpty }
-        let selectedModel = loadedModels.first { model in
-            model.key == modelID || model.loadedInstances.contains { $0.id == modelID }
-        } ?? loadedModels.first
-        guard let selectedModel, let instance = selectedModel.loadedInstances.first else {
-            return nil
-        }
-        return LMStudioLoadedContextInfo(loadedContextTokens: instance.config.contextLength)
     }
 
     private func parseAnalysis(from content: String, transcript: String) throws -> AnalysisMetadata {
@@ -655,11 +636,11 @@ struct LMStudioService {
         "und", "von", "war", "was", "weil", "wenn", "wie", "wir", "zu"
     ]
 
-    private func get(path: String, timeout: TimeInterval) async throws -> Data {
-        var request = URLRequest(url: baseURL.appendingPathComponent(path))
+    private func nativeGet(path: String, timeout: TimeInterval) async throws -> Data {
+        var request = URLRequest(url: nativeBaseURL.appendingPathComponent(path))
         request.timeoutInterval = timeout
         let (data, response) = try await data(for: request)
-        try validate(response: response, data: data, fallbackMessage: "LM Studio request failed.")
+        try validate(response: response, data: data, fallbackMessage: "LM Studio model metadata request failed.")
         return data
     }
 
@@ -778,18 +759,59 @@ struct ObsidianJournalExporter {
             let sourceAudioURL = try audioSourceURL(for: item, behavior: policy.audioFileBehavior)
             let audioDirectory = audioDestinationDirectory(for: policy, vaultRoot: vaultRoot, item: item)
             try FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
-            let destinationAudioURL = uniqueURL(in: audioDirectory, filename: generatedFilename)
-            if policy.audioFileBehavior == .moveToFolder {
+
+            let isMove = policy.audioFileBehavior == .moveToFolder
+            let willCompress = policy.compressAudioOnExport && AudioCompressor.shouldCompress(sourceAudioURL)
+            let willNormalize = policy.normalizeAudioOnExport
+
+            var processedAudioURL = sourceAudioURL
+            var normalizedTempURL: URL?
+            if willNormalize {
+                try FileManager.default.createDirectory(at: AppPaths.processingCacheDirectory, withIntermediateDirectories: true)
+                let tempURL = FileNaming.uniqueURL(
+                    in: AppPaths.processingCacheDirectory,
+                    filename: sourceAudioURL.deletingPathExtension().lastPathComponent + "-normalized.wav"
+                )
+                try AudioNormalizer.normalize(source: sourceAudioURL, to: tempURL, ffmpegPath: settings.ffmpegPath)
+                processedAudioURL = tempURL
+                normalizedTempURL = tempURL
+            }
+
+            let willReencode = willCompress || willNormalize
+            let audioFilename = willReencode
+                ? (generatedFilename as NSString).deletingPathExtension + (willCompress ? ".m4a" : ".wav")
+                : generatedFilename
+            let destinationAudioURL = uniqueURL(in: audioDirectory, filename: audioFilename)
+
+            if willCompress {
+                try AudioCompressor.compress(source: processedAudioURL, to: destinationAudioURL)
+                if isMove {
+                    try? FileManager.default.removeItem(at: sourceAudioURL)
+                }
+            } else if willNormalize {
+                try FileManager.default.copyItem(at: processedAudioURL, to: destinationAudioURL)
+                if isMove {
+                    try? FileManager.default.removeItem(at: sourceAudioURL)
+                }
+            } else if isMove {
                 try FileManager.default.moveItem(at: sourceAudioURL, to: destinationAudioURL)
-                updated.originalPath = destinationAudioURL.path
-                updated.originalFilename = destinationAudioURL.lastPathComponent
-                updated.managedAudioPath = nil
             } else {
                 try FileManager.default.copyItem(at: sourceAudioURL, to: destinationAudioURL)
             }
+
+            if let normalizedTempURL {
+                try? FileManager.default.removeItem(at: normalizedTempURL)
+            }
+
+            if isMove {
+                updated.originalPath = destinationAudioURL.path
+                updated.originalFilename = destinationAudioURL.lastPathComponent
+                updated.managedAudioPath = nil
+            }
+
             exportedAudioURL = destinationAudioURL
             updated.fileOperations.append(FileOperationRecord(
-                kind: policy.audioFileBehavior == .moveToFolder ? "move" : "copy",
+                kind: (willNormalize ? "normalize_" : "") + (willCompress ? "compress_" : "") + (isMove ? "move" : "copy"),
                 sourcePath: sourceAudioURL.path,
                 destinationPath: destinationAudioURL.path,
                 occurredAt: Date()
@@ -981,21 +1003,27 @@ final class ImportProcessor {
             }
             do {
                 try Task.checkCancellation()
-                item.status = .transcribing
-                item.error = nil
-                store.update(item)
+                let transcript: String
+                if let cachedTranscript = item.transcript, !cachedTranscript.isEmpty {
+                    transcript = cachedTranscript
+                } else {
+                    item.status = .transcribing
+                    item.error = nil
+                    store.update(item)
 
-                let whisper = MacWhisperService(executablePath: store.settings.macWhisperPath, timeoutSeconds: store.settings.transcriptionTimeoutSeconds)
-                let transcription = try await transcribe(item: item, with: whisper)
-                item = transcription.item
-                let transcript = transcription.transcript
-                try Task.checkCancellation()
-                guard !transcript.isEmpty else {
-                    throw ProcessingFailure(message: "MacWhisper returned an empty transcript.", details: item.originalPath)
+                    let whisper = MacWhisperService(executablePath: store.settings.macWhisperPath, timeoutSeconds: store.settings.transcriptionTimeoutSeconds)
+                    let transcription = try await transcribe(item: item, with: whisper)
+                    item = transcription.item
+                    transcript = transcription.transcript
+                    try Task.checkCancellation()
+                    guard !transcript.isEmpty else {
+                        throw ProcessingFailure(message: "MacWhisper returned an empty transcript.", details: item.originalPath)
+                    }
                 }
                 item = store.item(id: id) ?? item
                 item.transcript = transcript
                 item.status = .analyzing
+                item.error = nil
                 store.update(item)
 
                 guard let lmStudioURL = URL(string: store.settings.lmStudioBaseURL),
@@ -1231,15 +1259,6 @@ struct ProcessingFailure: LocalizedError {
 
     var errorDescription: String? { message }
     var failureReason: String? { details }
-}
-
-private struct ModelsResponse: Decodable {
-    struct Model: Decodable { var id: String }
-    var data: [Model]
-}
-
-private struct LMStudioLoadedContextInfo {
-    var loadedContextTokens: Int
 }
 
 private struct LMStudioNativeModelsResponse: Decodable {

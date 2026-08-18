@@ -6,6 +6,8 @@ struct SettingsView: View {
     @State private var selectedWorkflowID: String = StandardWorkflowID.obsidianJournal
     @State private var macWhisperStatus: String = "Not checked"
     @State private var isChecking = false
+    @State private var ffmpegStatus: String = "Not checked"
+    @State private var isCheckingFFmpeg = false
     @State private var lmStudioModels: [String] = []
     @State private var lmStudioStatus: String = "Not checked"
     @State private var isLoadingModels = false
@@ -48,6 +50,7 @@ struct SettingsView: View {
         .onAppear {
             selectedWorkflowID = store.settings.defaultWorkflow
             checkMacWhisper()
+            checkFFmpeg()
             refreshModels()
         }
     }
@@ -126,6 +129,18 @@ struct SettingsView: View {
                     checkMacWhisper()
                 }
                 .disabled(isChecking)
+            }
+
+            TextField("ffmpeg path", text: $store.settings.ffmpegPath)
+            HStack {
+                Text(ffmpegStatus)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                Spacer()
+                Button(isCheckingFFmpeg ? "Checking..." : "Check") {
+                    checkFFmpeg()
+                }
+                .disabled(isCheckingFFmpeg)
             }
 
             Divider()
@@ -269,6 +284,36 @@ struct SettingsView: View {
         }
     }
 
+    private func checkFFmpeg() {
+        isCheckingFFmpeg = true
+        ffmpegStatus = "Checking..."
+        let path = store.settings.ffmpegPath
+        Task {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: path)
+            process.arguments = ["-version"]
+            let stdout = Pipe()
+            process.standardOutput = stdout
+            process.standardError = Pipe()
+            do {
+                try process.run()
+                let data = stdout.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                let output = String(data: data, encoding: .utf8) ?? ""
+                let firstLine = output.split(separator: "\n").first.map(String.init) ?? "ffmpeg responded."
+                await MainActor.run {
+                    ffmpegStatus = process.terminationStatus == 0 ? firstLine : "ffmpeg exited with status \(process.terminationStatus)."
+                    isCheckingFFmpeg = false
+                }
+            } catch {
+                await MainActor.run {
+                    ffmpegStatus = error.localizedDescription
+                    isCheckingFFmpeg = false
+                }
+            }
+        }
+    }
+
     private func refreshModels() {
         guard let url = URL(string: store.settings.lmStudioBaseURL) else {
             lmStudioStatus = "Invalid LM Studio URL."
@@ -386,6 +431,10 @@ struct WorkflowPolicyEditor: View {
             }
             if policy.audioFileBehavior == .copyToFolder || policy.audioFileBehavior == .moveToFolder {
                 FolderPathRow(title: "Audio folder", path: $policy.audioDestinationPath)
+                Toggle("Normalize loudness on export (-16 LUFS)", isOn: $policy.normalizeAudioOnExport)
+                    .help("Two-pass EBU R128 loudness normalization (ffmpeg loudnorm, target -16 LUFS / -1.5 dBTP) on the exported copy. Requires ffmpeg (path set below in Services). The original source file is never modified.")
+                Toggle("Compress audio for export (AAC, 96 kbps mono)", isOn: $policy.compressAudioOnExport)
+                    .help("Re-encodes the exported copy to a small mono AAC/M4A file. Already-compact M4A source files (under ~200 kbps) are left untouched to avoid a quality-losing second encode. The original source file is never modified.")
             }
 
             Toggle("Review before export", isOn: reviewBeforeExportBinding)

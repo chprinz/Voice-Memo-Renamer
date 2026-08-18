@@ -1,4 +1,5 @@
 import AppKit
+import AudioToolbox
 import AVFoundation
 import CryptoKit
 import Foundation
@@ -250,6 +251,193 @@ enum AudioInspector {
         } catch {
             return nil
         }
+    }
+
+    static func bitRate(for url: URL) -> UInt32? {
+        withAudioFile(at: url) { file in
+            var bitRate: UInt32 = 0
+            var size = UInt32(MemoryLayout<UInt32>.size)
+            let status = AudioFileGetProperty(file, kAudioFilePropertyBitRate, &size, &bitRate)
+            return status == noErr ? bitRate : nil
+        }
+    }
+
+    static func sampleRate(for url: URL) -> Double? {
+        withAudioFile(at: url) { file in
+            var asbd = AudioStreamBasicDescription()
+            var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+            let status = AudioFileGetProperty(file, kAudioFilePropertyDataFormat, &size, &asbd)
+            return status == noErr ? asbd.mSampleRate : nil
+        }
+    }
+
+    private static func withAudioFile<T>(at url: URL, _ body: (AudioFileID) -> T?) -> T? {
+        var audioFile: AudioFileID?
+        let status = AudioFileOpenURL(url as CFURL, .readPermission, 0, &audioFile)
+        guard status == noErr, let file = audioFile else { return nil }
+        defer { AudioFileClose(file) }
+        return body(file)
+    }
+}
+
+enum AudioCompressor {
+    static let toolPath = "/usr/bin/afconvert"
+    static let targetBitrate = 96_000
+    static let fallbackSampleRate = 44_100
+    private static let skipBitrateThreshold = 200_000
+    private static let skipEligibleExtensions: Set<String> = ["m4a"]
+
+    static func shouldCompress(_ url: URL) -> Bool {
+        guard skipEligibleExtensions.contains(url.pathExtension.lowercased()) else { return true }
+        guard let bitRate = AudioInspector.bitRate(for: url) else { return true }
+        return bitRate >= skipBitrateThreshold
+    }
+
+    static func compress(source: URL, to destination: URL) throws {
+        let sampleRate = Int(AudioInspector.sampleRate(for: source) ?? Double(fallbackSampleRate))
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: toolPath)
+        process.arguments = [
+            "-f", "m4af",
+            "-d", "aac@\(sampleRate)",
+            "-c", "1",
+            "--mix",
+            "-b", "\(targetBitrate)",
+            source.path,
+            destination.path
+        ]
+        let stderr = Pipe()
+        process.standardError = stderr
+        process.standardOutput = Pipe()
+
+        do {
+            try process.run()
+        } catch {
+            throw ProcessingFailure(
+                message: "Could not start afconvert.",
+                details: "\(toolPath)\n\(error.localizedDescription)"
+            )
+        }
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            try? FileManager.default.removeItem(at: destination)
+            let details = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            throw ProcessingFailure(
+                message: "Audio compression failed.",
+                details: details.isEmpty
+                    ? "afconvert exited with status \(process.terminationStatus)."
+                    : "\(source.path)\n\(details)"
+            )
+        }
+    }
+}
+
+enum AudioNormalizer {
+    private static let filterBase = "loudnorm=I=-16:TP=-1.5:LRA=11"
+
+    static func normalize(source: URL, to destination: URL, ffmpegPath: String) throws {
+        let sampleRate = AudioInspector.sampleRate(for: source)
+        let measurement = try measure(source: source, ffmpegPath: ffmpegPath)
+        do {
+            try apply(source: source, to: destination, ffmpegPath: ffmpegPath, sampleRate: sampleRate, measurement: measurement)
+        } catch {
+            try? FileManager.default.removeItem(at: destination)
+            throw error
+        }
+    }
+
+    private struct Measurement: Decodable {
+        var inputI: String
+        var inputTP: String
+        var inputLRA: String
+        var inputThresh: String
+        var targetOffset: String
+
+        enum CodingKeys: String, CodingKey {
+            case inputI = "input_i"
+            case inputTP = "input_tp"
+            case inputLRA = "input_lra"
+            case inputThresh = "input_thresh"
+            case targetOffset = "target_offset"
+        }
+    }
+
+    private static func measure(source: URL, ffmpegPath: String) throws -> Measurement {
+        let output = try run(ffmpegPath: ffmpegPath, arguments: [
+            "-hide_banner", "-nostats", "-loglevel", "info",
+            "-i", source.path,
+            "-af", "\(filterBase):print_format=json",
+            "-f", "null", "-"
+        ])
+        guard let start = output.firstIndex(of: "{"), let end = output.lastIndex(of: "}") else {
+            throw ProcessingFailure(message: "Could not measure audio loudness.", details: output)
+        }
+        let json = String(output[start...end])
+        guard let data = json.data(using: .utf8) else {
+            throw ProcessingFailure(message: "Could not measure audio loudness.", details: json)
+        }
+        do {
+            return try JSONDecoder().decode(Measurement.self, from: data)
+        } catch {
+            throw ProcessingFailure(
+                message: "Could not parse loudness measurement.",
+                details: "\(error.localizedDescription)\n\n\(json)"
+            )
+        }
+    }
+
+    private static func apply(
+        source: URL,
+        to destination: URL,
+        ffmpegPath: String,
+        sampleRate: Double?,
+        measurement: Measurement
+    ) throws {
+        var filter = filterBase
+        filter += ":measured_I=\(measurement.inputI)"
+        filter += ":measured_TP=\(measurement.inputTP)"
+        filter += ":measured_LRA=\(measurement.inputLRA)"
+        filter += ":measured_thresh=\(measurement.inputThresh)"
+        filter += ":offset=\(measurement.targetOffset)"
+        filter += ":linear=true"
+
+        var arguments = ["-y", "-hide_banner", "-nostats", "-loglevel", "error", "-i", source.path, "-af", filter]
+        if let sampleRate {
+            arguments += ["-ar", String(Int(sampleRate))]
+        }
+        arguments += ["-c:a", "pcm_s24le", destination.path]
+        try run(ffmpegPath: ffmpegPath, arguments: arguments)
+    }
+
+    @discardableResult
+    private static func run(ffmpegPath: String, arguments: [String]) throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: ffmpegPath)
+        process.arguments = arguments
+        let stderr = Pipe()
+        process.standardError = stderr
+        process.standardOutput = Pipe()
+
+        do {
+            try process.run()
+        } catch {
+            throw ProcessingFailure(
+                message: "Could not start ffmpeg.",
+                details: "\(ffmpegPath)\n\(error.localizedDescription)"
+            )
+        }
+        let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let output = String(data: errorData, encoding: .utf8) ?? ""
+
+        guard process.terminationStatus == 0 else {
+            throw ProcessingFailure(
+                message: "Audio normalization failed.",
+                details: output.isEmpty ? "ffmpeg exited with status \(process.terminationStatus)." : output
+            )
+        }
+        return output
     }
 }
 
