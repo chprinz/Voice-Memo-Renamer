@@ -761,8 +761,8 @@ struct ObsidianJournalExporter {
             try FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
 
             let isMove = policy.audioFileBehavior == .moveToFolder
-            let willCompress = policy.compressAudioOnExport && AudioCompressor.shouldCompress(sourceAudioURL)
-            let willNormalize = policy.normalizeAudioOnExport
+            let willCompress = settings.compressAudioOnExport && AudioCompressor.shouldCompress(sourceAudioURL)
+            let willNormalize = settings.normalizeAudioOnExport
 
             var processedAudioURL = sourceAudioURL
             var normalizedTempURL: URL?

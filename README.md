@@ -8,7 +8,7 @@ This is not a general-purpose transcription product yet. It is a personal workfl
 
 ## Status
 
-Version `1.0.0` is a first public release.
+Version `1.1.1`. First public release was `1.0.0`.
 
 The app currently assumes:
 
@@ -41,6 +41,7 @@ Settings for workflows, storage, MacWhisper, and LM Studio:
 - Lets you review the title, summary, workflow, date, transcript, and technical details.
 - Imports approved memos into an Obsidian monthly journal note.
 - Copies audio into the configured audio destination folder.
+- Optionally compresses and/or loudness-normalizes the exported audio copy (see [Audio Processing Options](#audio-processing-options)).
 - Keeps local import history in:
 
 ```text
@@ -65,6 +66,15 @@ and copies audio to:
 
 You can change workflows, destination folders, watch folders, filename patterns, and transcript/audio behavior in the app settings.
 
+## Audio Processing Options
+
+Two checkboxes sit right in the main window, next to the workflow picker in the drop zone: **Normalize (-16 LUFS)** and **Compress (96 kbps mono)**. They're global — not per-workflow — since whether a file needs processing depends on the source audio, not the destination. They apply whenever the workflow handling an import actually produces an export copy (audio file behavior "Copy audio to folder" or "Move audio to folder"); workflows that leave audio in place or rename in place are unaffected. The original source file is never modified — only the exported copy is affected.
+
+- **Normalize (-16 LUFS)**: two-pass EBU R128 loudness normalization (`ffmpeg`'s `loudnorm` filter, target -16 LUFS / -1.5 dBTP / LRA 11) at the source's own sample rate. Useful for recorders (e.g. wireless lav mics) whose raw levels vary a lot. Requires `ffmpeg`; its path is configurable under Settings → Services and defaults to `/opt/homebrew/bin/ffmpeg`.
+- **Compress (96 kbps mono)**: re-encodes the exported copy to mono AAC/M4A at 96 kbps, at the source sample rate, via the built-in `afconvert`. Already-compact M4A sources (under ~200 kbps) are left untouched to avoid a quality-losing second encode.
+
+If both are enabled, normalization runs first and compression runs on the normalized result.
+
 ## Privacy
 
 The app is designed for a local-first workflow:
@@ -83,10 +93,11 @@ The app does not intentionally send audio or transcripts to a cloud service. If 
 - MacWhisper CLI.
 - LM Studio with a loaded local model.
 - Optional: Obsidian with an existing vault.
+- Optional: `ffmpeg` (only if you enable loudness normalization on a workflow). Audio compression uses the built-in `afconvert`, no extra install needed.
 
 ## Run The Downloaded App
 
-For the `1.0.0` release, download the DMG from GitHub Releases and drag `Voice Memo Renamer.app` into Applications.
+Download the latest DMG from [GitHub Releases](https://github.com/chprinz/Voice-Memo-Renamer/releases) and drag `Voice Memo Renamer.app` into Applications.
 
 Because this app is currently distributed outside the Mac App Store and may not be notarized, macOS may show a security warning on first launch. If that happens, open it from Finder with Control-click, choose Open, and confirm that you want to run it.
 
@@ -97,6 +108,7 @@ Before importing files, open Settings and check:
 - Loaded LM Studio model.
 - Default workflow.
 - Obsidian vault or destination folder paths.
+- `ffmpeg` path, if you plan to enable loudness normalization on a workflow.
 
 ## Build From Source
 
@@ -123,13 +135,13 @@ open -n .build/VoiceMemoRenamer.app
 To build a release app and package it as a DMG:
 
 ```bash
-Scripts/build-dmg.sh 1.0.0
+Scripts/build-dmg.sh 1.1.1
 ```
 
 The DMG is written to:
 
 ```text
-dist/VoiceMemoRenamer-1.0.0.dmg
+dist/VoiceMemoRenamer-1.1.1.dmg
 ```
 
 This script uses ad-hoc signing for local distribution. For broader public distribution, use a Developer ID certificate and notarization.

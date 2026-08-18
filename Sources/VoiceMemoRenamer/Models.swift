@@ -164,8 +164,6 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
     var reviewBehavior: ReviewBehavior
     var filenamePattern: String
     var processingStoragePolicy: ProcessingStoragePolicy
-    var compressAudioOnExport: Bool
-    var normalizeAudioOnExport: Bool
 
     var usesWatchFolder: Bool {
         isEnabled && sourceBehavior.usesWatchFolder && !watchFolderPath.isEmpty
@@ -188,8 +186,6 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         case reviewBehavior
         case filenamePattern
         case processingStoragePolicy
-        case compressAudioOnExport
-        case normalizeAudioOnExport
     }
 
     init(
@@ -206,9 +202,7 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         audioFileBehavior: AudioFileBehavior,
         reviewBehavior: ReviewBehavior,
         filenamePattern: String,
-        processingStoragePolicy: ProcessingStoragePolicy,
-        compressAudioOnExport: Bool = false,
-        normalizeAudioOnExport: Bool = false
+        processingStoragePolicy: ProcessingStoragePolicy
     ) {
         self.id = id
         self.name = name
@@ -224,8 +218,6 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         self.reviewBehavior = reviewBehavior
         self.filenamePattern = filenamePattern
         self.processingStoragePolicy = processingStoragePolicy
-        self.compressAudioOnExport = compressAudioOnExport
-        self.normalizeAudioOnExport = normalizeAudioOnExport
     }
 
     init(from decoder: Decoder) throws {
@@ -243,8 +235,6 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         reviewBehavior = try container.decodeIfPresent(ReviewBehavior.self, forKey: .reviewBehavior) ?? .requireReview
         filenamePattern = try container.decodeIfPresent(String.self, forKey: .filenamePattern) ?? WorkflowPolicy.defaultFilenamePattern
         processingStoragePolicy = try container.decodeIfPresent(ProcessingStoragePolicy.self, forKey: .processingStoragePolicy) ?? .deleteAfterSuccessfulExport
-        compressAudioOnExport = try container.decodeIfPresent(Bool.self, forKey: .compressAudioOnExport) ?? false
-        normalizeAudioOnExport = try container.decodeIfPresent(Bool.self, forKey: .normalizeAudioOnExport) ?? false
 
         if let behavior = try container.decodeIfPresent(AudioFileBehavior.self, forKey: .audioFileBehavior) {
             audioFileBehavior = behavior
@@ -274,8 +264,6 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         try container.encode(reviewBehavior, forKey: .reviewBehavior)
         try container.encode(filenamePattern, forKey: .filenamePattern)
         try container.encode(processingStoragePolicy, forKey: .processingStoragePolicy)
-        try container.encode(compressAudioOnExport, forKey: .compressAudioOnExport)
-        try container.encode(normalizeAudioOnExport, forKey: .normalizeAudioOnExport)
     }
 
     private static func migratedAudioFileBehavior(
@@ -398,6 +386,8 @@ struct AppSettings: Codable, Equatable {
     var jprWatchFolderPath = "\(NSHomeDirectory())/Library/Mobile Documents/iCloud~com~openplanetsoftware~just-press-record/Documents"
     var archiveRelativePath = "📦 Archive/Voice Memos"
     var importedAudioFingerprints: [String] = []
+    var compressAudioOnExport = false
+    var normalizeAudioOnExport = false
 
     enum CodingKeys: String, CodingKey {
         case macWhisperPath
@@ -418,6 +408,8 @@ struct AppSettings: Codable, Equatable {
         case jprWatchFolderPath
         case archiveRelativePath
         case importedAudioFingerprints
+        case compressAudioOnExport
+        case normalizeAudioOnExport
     }
 
     init() {}
@@ -450,6 +442,8 @@ struct AppSettings: Codable, Equatable {
         jprWatchFolderPath = try container.decodeIfPresent(String.self, forKey: .jprWatchFolderPath) ?? jprWatchFolderPath
         archiveRelativePath = try container.decodeIfPresent(String.self, forKey: .archiveRelativePath) ?? archiveRelativePath
         importedAudioFingerprints = try container.decodeIfPresent([String].self, forKey: .importedAudioFingerprints) ?? []
+        compressAudioOnExport = try container.decodeIfPresent(Bool.self, forKey: .compressAudioOnExport) ?? false
+        normalizeAudioOnExport = try container.decodeIfPresent(Bool.self, forKey: .normalizeAudioOnExport) ?? false
         WorkflowPolicy.defaults.forEach { fallback in
             if !workflows.contains(where: { $0.id == fallback.id }) {
                 workflows.append(fallback)

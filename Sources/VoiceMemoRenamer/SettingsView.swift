@@ -431,10 +431,6 @@ struct WorkflowPolicyEditor: View {
             }
             if policy.audioFileBehavior == .copyToFolder || policy.audioFileBehavior == .moveToFolder {
                 FolderPathRow(title: "Audio folder", path: $policy.audioDestinationPath)
-                Toggle("Normalize loudness on export (-16 LUFS)", isOn: $policy.normalizeAudioOnExport)
-                    .help("Two-pass EBU R128 loudness normalization (ffmpeg loudnorm, target -16 LUFS / -1.5 dBTP) on the exported copy. Requires ffmpeg (path set below in Services). The original source file is never modified.")
-                Toggle("Compress audio for export (AAC, 96 kbps mono)", isOn: $policy.compressAudioOnExport)
-                    .help("Re-encodes the exported copy to a small mono AAC/M4A file. Already-compact M4A source files (under ~200 kbps) are left untouched to avoid a quality-losing second encode. The original source file is never modified.")
             }
 
             Toggle("Review before export", isOn: reviewBeforeExportBinding)

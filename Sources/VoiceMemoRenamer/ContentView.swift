@@ -182,6 +182,16 @@ struct ContentView: View {
                     .controlSize(.large)
                     .frame(width: 268, height: 30)
                 }
+
+                HStack(spacing: 16) {
+                    Toggle("Normalize (-16 LUFS)", isOn: $store.settings.normalizeAudioOnExport)
+                        .help("Two-pass EBU R128 loudness normalization (ffmpeg loudnorm) on the exported audio copy. Requires ffmpeg, path set in Settings → Services.")
+                    Toggle("Compress (96 kbps mono)", isOn: $store.settings.compressAudioOnExport)
+                        .help("Re-encodes the exported audio copy to mono AAC/M4A at 96 kbps. Already-compact M4A sources are left untouched.")
+                }
+                .toggleStyle(.checkbox)
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
 
             Spacer(minLength: 20)
