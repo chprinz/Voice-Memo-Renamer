@@ -140,3 +140,21 @@ extension String {
         return first.uppercased() + dropFirst()
     }
 }
+
+/// The single editable affordance in the app. One glyph, one size, always directly
+/// right of the value it edits — in the top bar, the footer, and the detail panel.
+struct EditPencil: View {
+    var help: String
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "pencil")
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 16, height: 16)
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(.secondary)
+        .help(help)
+    }
+}

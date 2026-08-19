@@ -10,9 +10,17 @@ struct ImportDetailView: View {
     @State private var titleDraft = ""
     @State private var summaryDraft = ""
     @State private var transcriptDraft = ""
+    /// The date is read from the file, so it reads as a fact until the pencil says
+    /// otherwise. Unlocking is per recording, never carried to the next one.
+    @State private var isEditingRecordingDate = false
+    /// Which recording the drafts above belong to. In the split view this panel is
+    /// reused for the next selection, so without this the drafts of one recording
+    /// would be shown — and saved — on the next one.
+    @State private var loadedItemID: ImportItem.ID?
     var item: ImportItem
-    /// The sheet needs its own close affordance; the split-view panel does not.
-    var showsCloseButton = true
+    /// Closing means "dismiss the sheet" in one place and "clear the selection" in
+    /// the other. Both need the same button.
+    var onClose: (() -> Void)?
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -64,14 +72,27 @@ struct ImportDetailView: View {
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
-        .onAppear { syncDrafts() }
+        .onAppear {
+            loadedItemID = item.id
+            syncDrafts()
+        }
         .onChange(of: item.status) { _ in if isEditable { syncDrafts() } }
+        .onChange(of: item.id) { newID in
+            commitTextEdits(to: loadedItemID)
+            loadedItemID = newID
+            isEditingRecordingDate = false
+            syncDrafts()
+        }
         .onDisappear { commitTextEdits() }
     }
 
     /// Editing is only safe once a background task can no longer overwrite it —
     /// otherwise a finished analysis could silently clobber what you just typed.
     private var isEditable: Bool {
+        Self.isEditable(item)
+    }
+
+    private static func isEditable(_ item: ImportItem) -> Bool {
         ![.new, .queued, .transcribing, .analyzing, .importing, .imported].contains(item.status)
     }
 
@@ -82,28 +103,32 @@ struct ImportDetailView: View {
     }
 
     /// Saves edited title/summary/transcript back to the store. Called on tab switch,
-    /// on dismiss, and before the primary action — not on every keystroke, so typing
-    /// doesn't trigger a history.json write per character.
-    private func commitTextEdits() {
-        guard isEditable else { return }
-        var updated = item
+    /// when the selection moves to another recording, on dismiss, and before the
+    /// primary action — not on every keystroke, so typing doesn't trigger a
+    /// history.json write per character.
+    ///
+    /// The target is passed explicitly because the selection may already have moved
+    /// on by the time the edits are saved; they belong to the recording that was on
+    /// screen while they were typed.
+    private func commitTextEdits(to itemID: ImportItem.ID? = nil) {
+        guard var updated = store.item(id: itemID ?? item.id), Self.isEditable(updated) else { return }
         var changed = false
 
-        if titleDraft != (item.analysis?.title ?? item.displayTitle) {
+        if titleDraft != (updated.analysis?.title ?? updated.displayTitle) {
             if updated.analysis == nil {
                 updated.analysis = ImportProcessor.filenameOnlyAnalysis(for: updated)
             }
             updated.analysis?.title = titleDraft
             changed = true
         }
-        if summaryDraft != (item.analysis?.summary ?? "") {
+        if summaryDraft != (updated.analysis?.summary ?? "") {
             if updated.analysis == nil {
                 updated.analysis = ImportProcessor.filenameOnlyAnalysis(for: updated)
             }
             updated.analysis?.summary = summaryDraft
             changed = true
         }
-        if transcriptDraft != (item.transcript ?? "") {
+        if transcriptDraft != (updated.transcript ?? "") {
             updated.transcript = transcriptDraft
             changed = true
         }
@@ -151,16 +176,18 @@ struct ImportDetailView: View {
                     StatusPill(status: item.status)
                     primaryAction
                 }
-                if showsCloseButton {
-                    Button {
+                Button {
+                    if let onClose {
+                        onClose()
+                    } else {
                         dismiss()
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
                     }
-                    .buttonStyle(.borderless)
-                    .help("Close")
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
                 }
+                .buttonStyle(.borderless)
+                .help(onClose == nil ? "Close" : "Close \u{2014} or press Escape")
             }
         }
     }
@@ -182,13 +209,16 @@ struct ImportDetailView: View {
         switch item.status {
         case .readyForReview: "square.and.arrow.down"
         case .needsAttention, .failed: "arrow.clockwise"
-        case .imported: "folder"
         default: "arrow.right"
         }
     }
 
     private var summarySection: some View {
         VStack(alignment: .leading, spacing: 18) {
+            if item.status == .imported {
+                filedNotice
+            }
+
             VStack(alignment: .leading, spacing: 8) {
                 Text("Summary")
                     .font(.headline)
@@ -220,49 +250,29 @@ struct ImportDetailView: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Workflow")
-                    .font(.headline)
-                if isEditable {
-                    Picker("Workflow", selection: workflowBinding) {
-                        ForEach(store.settings.workflows.filter(\.isEnabled)) { workflow in
-                            Text(workflow.name).tag(workflow.id)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(maxWidth: 260)
-                    .help("Where this recording will be filed \u{2014} the note and audio destination, and how it's imported.")
-                } else {
-                    Text(store.workflowPolicy(for: item.workflow).name)
-                        .font(.body)
-                }
-                Text(WorkflowSummary.planTags(for: store.workflowPolicy(for: item.workflow)))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if isEditable, let suggestion = suggestedWorkflow {
-                    HStack(spacing: 8) {
-                        Text("The model would file this under \(suggestion.name).")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Button("Use") {
-                            applyWorkflow(suggestion.id)
-                        }
-                        .controlSize(.small)
-                    }
-                }
-            }
+            workflowLine
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Recording date")
                     .font(.headline)
-                if isEditable {
+                if isEditable && isEditingRecordingDate {
                     DatePicker("Recording date", selection: recordingDateBinding)
                         .labelsHidden()
                         .frame(maxWidth: 260)
                 } else {
-                    Text(DateFormatter.itemDate.string(from: item.recordingDate))
-                        .font(.body)
+                    HStack(spacing: 6) {
+                        Text(DateFormatter.itemDate.string(from: item.recordingDate))
+                            .font(.body)
+                        if isEditable {
+                            EditPencil(help: "Edit the recording date") {
+                                isEditingRecordingDate = true
+                            }
+                        }
+                    }
                 }
+                Text(item.recordingDateSource.label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             if let themes = item.analysis?.themes, !themes.isEmpty {
@@ -275,6 +285,85 @@ struct ImportDetailView: View {
 
             if let error = item.error {
                 AttentionBox(error: error, item: item, showDetails: $showDetails)
+            }
+        }
+    }
+
+    /// Read-only after import needs a reason on screen, not just greyed-out fields:
+    /// the note and the filename are already written, so the place to change them is
+    /// review, before the write.
+    @ViewBuilder
+    private var filedNotice: some View {
+        let policy = store.workflowPolicy(for: item.workflow)
+        HStack(alignment: .firstTextBaseline, spacing: 7) {
+            Image(systemName: "lock")
+                .foregroundStyle(.secondary)
+            Text(policy.reviewBehavior == .autoExportWhenReady
+                 ? "Already filed. This workflow imports automatically \u{2014} set it to \"Always review first\" in Settings to edit before the note and filename are written."
+                 : "Already filed. Title, summary and date can be edited during review, before the note and filename are written.")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .font(.caption)
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    /// A statement rather than a second control: the workflow was already chosen in
+    /// the top bar. Overriding it for a single recording stays possible, one step
+    /// behind "Change".
+    @ViewBuilder
+    private var workflowLine: some View {
+        let policy = store.workflowPolicy(for: item.workflow)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text("Workflow:")
+                    .foregroundStyle(.secondary)
+                Text(policy.name)
+                if item.workflow == store.settings.defaultWorkflow {
+                    Text("(Default)")
+                        .foregroundStyle(.secondary)
+                }
+                if isEditable {
+                    Text("·")
+                        .foregroundStyle(.tertiary)
+                    Menu("Change") {
+                        ForEach(store.settings.workflows.filter(\.isEnabled)) { workflow in
+                            Button {
+                                applyWorkflow(workflow.id)
+                            } label: {
+                                if workflow.id == item.workflow {
+                                    Label(workflow.name, systemImage: "checkmark")
+                                } else {
+                                    Text(workflow.name)
+                                }
+                            }
+                        }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("File this one recording under a different workflow.")
+                }
+            }
+            .font(.subheadline)
+
+            Text(WorkflowSummary.planTags(for: policy))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if isEditable, let suggestion = suggestedWorkflow {
+                HStack(spacing: 8) {
+                    Text("The model would file this under \(suggestion.name).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Use") {
+                        applyWorkflow(suggestion.id)
+                    }
+                    .controlSize(.small)
+                }
+                .padding(.top, 2)
             }
         }
     }
@@ -434,14 +523,6 @@ struct ImportDetailView: View {
         return lines.joined(separator: "\n")
     }
 
-    private var workflowBinding: Binding<String> {
-        Binding {
-            item.workflow
-        } set: { workflow in
-            applyWorkflow(workflow)
-        }
-    }
-
     private func applyWorkflow(_ workflow: String) {
         var updated = item
         updated.workflow = workflow
@@ -489,8 +570,6 @@ struct ImportDetailView: View {
             Task { await ImportProcessor(store: store).export(item.id) }
         case .needsAttention, .failed:
             ImportProcessor(store: store).process(item.id)
-        case .imported:
-            Finder.reveal(item.exportedMarkdownPath ?? exportedAudioPath ?? item.originalPath)
         default:
             break
         }
@@ -721,8 +800,9 @@ struct FlowLayout: View {
 /// mean opening and dismissing each one.
 struct ImportDetailPane: View {
     var item: ImportItem
+    var onClose: () -> Void
 
     var body: some View {
-        ImportDetailView(item: item, showsCloseButton: false)
+        ImportDetailView(item: item, onClose: onClose)
     }
 }

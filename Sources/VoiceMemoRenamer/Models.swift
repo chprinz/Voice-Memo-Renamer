@@ -451,7 +451,9 @@ struct ImportItem: Codable, Identifiable, Equatable {
         case .failed, .needsAttention:
             return "Try Again"
         case .imported:
-            return "Show in Finder"
+            // Already filed. Reaching the files it produced is the Files tab's job,
+            // so the header keeps one meaning: the step that is still outstanding.
+            return nil
         default:
             return nil
         }

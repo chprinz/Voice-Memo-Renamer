@@ -101,6 +101,8 @@ struct ContentView: View {
                 detailPane
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            Divider()
+            statusFooter
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .toolbar {
@@ -153,31 +155,22 @@ struct ContentView: View {
         } message: {
             Text(clearDialogMessage)
         }
+        .onExitCommand { selectedItemID = nil }
         .onAppear(perform: adoptDefaultWorkflow)
         .task(id: connectivityRefreshKey) {
             await refreshConnectivityLoop()
         }
     }
 
-    // MARK: - Drop zone
+    // MARK: - Top bar
 
-    /// Audio on the left, the destination on the right, an arrow between them. The
-    /// workflow picker reads as consequential because something points at it.
+    /// A single row: the audio you add on the left, and on the right the workflow
+    /// with the destinations it implies. Keeping the destinations beside the picker
+    /// rather than below it ties them to the control that changes them, and holds
+    /// the bar to one line.
     private var importDropZone: some View {
-        HStack(spacing: 0) {
-            VStack(spacing: Space.s) {
-                ZStack {
-                    Circle()
-                        .fill(Color.accentColor.opacity(isTargeted ? 0.28 : 0.18))
-                        .frame(width: 44, height: 44)
-                    Image(systemName: isTargeted ? "arrow.down.doc.fill" : "waveform.badge.plus")
-                        .font(.system(size: 21, weight: .semibold))
-                        .foregroundStyle(Color.accentColor)
-                }
-
-                Text(isTargeted ? "Drop to add audio" : "Drop audio here")
-                    .font(.title3.weight(.semibold))
-
+        HStack(spacing: Space.xl) {
+            HStack(spacing: Space.m) {
                 Button {
                     chooseAudioFiles()
                 } label: {
@@ -185,46 +178,38 @@ struct ContentView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-            }
-            .frame(maxWidth: .infinity)
 
-            FlowArrow()
-                .frame(width: 76, height: 48)
-                .padding(.horizontal, Space.xl)
-
-            VStack(alignment: .leading, spacing: Space.xs) {
-                Text("WORKFLOW")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .kerning(0.4)
-
-                Picker("Workflow", selection: $sessionWorkflow) {
-                    ForEach(enabledWorkflows) { workflow in
-                        Text(workflow.name).tag(workflow.id)
-                    }
-                }
-                .labelsHidden()
-                .controlSize(.large)
-                .frame(minWidth: 220, maxWidth: 260, alignment: .leading)
-                .padding(.bottom, 2)
-                .help("Applies to audio you add here. The watch folder keeps the default set in Settings.")
-
-                ForEach(destinationRows, id: \.label) { row in
-                    HStack(alignment: .firstTextBaseline, spacing: 7) {
-                        Text(row.label)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 96, alignment: .leading)
-                        Text(row.value)
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
+                Text(isTargeted ? "Drop to add" : "or drop audio anywhere in this window")
                     .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Divider()
+                .frame(height: 36)
+
+            HStack(spacing: Space.xl) {
+                HStack(spacing: Space.s) {
+                    Text("Workflow:")
+                        .foregroundStyle(.secondary)
+
+                    Picker("Workflow", selection: $sessionWorkflow) {
+                        ForEach(enabledWorkflows) { workflow in
+                            Text(workflow.name).tag(workflow.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .controlSize(.large)
+                    .frame(minWidth: 180, maxWidth: 240, alignment: .leading)
+                    .help("Applies to audio you add here. The watch folder keeps the default set in Settings.")
                 }
+                .layoutPriority(1)
+
+                destinationSummary
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.vertical, Space.xl)
+        .padding(.vertical, Space.l)
         .padding(.horizontal, Space.xxl)
         .frame(maxWidth: .infinity)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
@@ -235,6 +220,25 @@ struct ContentView: View {
         .padding(.horizontal, Space.xl)
         .padding(.top, Space.l)
         .padding(.bottom, Space.m)
+    }
+
+    /// Label and value in two aligned columns. Read-only: these paths belong to the
+    /// workflow, and the workflow is edited in Settings.
+    private var destinationSummary: some View {
+        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: Space.m, verticalSpacing: Space.xs) {
+            ForEach(destinationRows, id: \.label) { row in
+                GridRow {
+                    Text(row.label)
+                        .foregroundStyle(.secondary)
+                        .gridColumnAlignment(.leading)
+                    Text(row.value)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+        }
+        .font(.caption)
     }
 
     // MARK: - Sidebar
@@ -351,14 +355,41 @@ struct ContentView: View {
     @ViewBuilder
     private var detailPane: some View {
         if let item = selectedItem {
-            ImportDetailPane(item: item)
-                .environmentObject(store)
+            ImportDetailPane(item: item) {
+                selectedItemID = nil
+            }
+            .environmentObject(store)
         } else {
-            EmptyDetailState(
-                watchFolders: activeWatchFolders,
-                hasItems: !store.items.isEmpty
-            )
+            EmptyDetailState(hasItems: !store.items.isEmpty)
         }
+    }
+
+    // MARK: - Footer
+
+    /// Where the app is watching is a property of the window, not of whatever is
+    /// selected, so it sits in one fixed place and stays there.
+    private var statusFooter: some View {
+        HStack(spacing: 7) {
+            Circle()
+                .fill(activeWatchFolders.isEmpty ? Color(nsColor: .tertiaryLabelColor) : Color.green)
+                .frame(width: 6, height: 6)
+            if activeWatchFolders.isEmpty {
+                Text("No watch folder")
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Watching")
+                    .foregroundStyle(.secondary)
+                Text(activeWatchFolders.joined(separator: ", "))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer()
+        }
+        .font(.caption)
+        .padding(.horizontal, Space.l)
+        .padding(.vertical, 6)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
     }
 
     // MARK: - Banners
@@ -449,9 +480,13 @@ struct ContentView: View {
             .map { PathDisplay.short($0.watchFolderPath, components: 2) }
     }
 
+    /// A selection only survives while the recording it points at is actually in the
+    /// list on the left. Switching to History, filtering, or searching it away
+    /// therefore clears the panel instead of stranding a recording you can no
+    /// longer see next to a list that no longer contains it.
     private var selectedItem: ImportItem? {
-        guard let selectedItemID else { return nil }
-        return store.item(id: selectedItemID)
+        guard let selectedItemID, let item = store.item(id: selectedItemID) else { return nil }
+        return visibleItems.contains { $0.id == item.id } ? item : nil
     }
 
     private var modeSelection: Binding<QueueViewMode> {
@@ -460,6 +495,7 @@ struct ContentView: View {
         } set: { newMode in
             mode = newMode
             filter = .all
+            selectedItemID = nil
         }
     }
 
@@ -772,45 +808,6 @@ struct ContentView: View {
     }
 }
 
-/// The waveform resolving into an arrow: sound becoming a filed note. Drawn rather
-/// than set as a glyph so the gradient can carry the eye toward the destination.
-struct FlowArrow: View {
-    var body: some View {
-        Canvas { context, size in
-            let scaleX = size.width / 76
-            let scaleY = size.height / 48
-            func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
-                CGPoint(x: x * scaleX, y: y * scaleY)
-            }
-
-            let gradient = GraphicsContext.Shading.linearGradient(
-                Gradient(colors: [Color(nsColor: .secondaryLabelColor).opacity(0.55), Color.accentColor]),
-                startPoint: point(0, 24),
-                endPoint: point(70, 24)
-            )
-            let style = StrokeStyle(lineWidth: 2.4, lineCap: .round, lineJoin: .round)
-
-            var bars = Path()
-            bars.move(to: point(3, 18)); bars.addLine(to: point(3, 30))
-            bars.move(to: point(11, 13)); bars.addLine(to: point(11, 35))
-            bars.move(to: point(19, 20)); bars.addLine(to: point(19, 28))
-            context.stroke(bars, with: gradient, style: style)
-
-            var curve = Path()
-            curve.move(to: point(28, 30))
-            curve.addCurve(to: point(60, 20), control1: point(40, 30), control2: point(50, 27))
-            context.stroke(curve, with: gradient, style: style)
-
-            var head = Path()
-            head.move(to: point(51.1, 21.3))
-            head.addLine(to: point(60, 20))
-            head.addLine(to: point(55.7, 27.9))
-            context.stroke(head, with: gradient, style: style)
-        }
-        .accessibilityHidden(true)
-    }
-}
-
 /// Ambient health. Shows the service name spelled out, a dot for reachability, and
 /// a pulse while that service is doing work.
 struct ServiceBadge: View {
@@ -1038,7 +1035,6 @@ struct EmptyQueueState: View {
 }
 
 struct EmptyDetailState: View {
-    var watchFolders: [String]
     var hasItems: Bool
 
     var body: some View {
@@ -1055,25 +1051,6 @@ struct EmptyDetailState: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
-
-            if !watchFolders.isEmpty {
-                HStack(spacing: 7) {
-                    Circle()
-                        .fill(Color.green)
-                        .frame(width: 6, height: 6)
-                    Text("Watching")
-                        .foregroundStyle(.secondary)
-                    Text(watchFolders.joined(separator: ", "))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                .font(.caption)
-                .padding(.horizontal, Space.m)
-                .padding(.vertical, 7)
-                .background(Color(nsColor: .quaternaryLabelColor).opacity(0.2), in: RoundedRectangle(cornerRadius: 7))
-                .padding(.top, Space.xs)
-            }
         }
         .padding(Space.xxl)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
