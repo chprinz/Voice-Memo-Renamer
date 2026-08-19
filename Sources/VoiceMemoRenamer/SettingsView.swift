@@ -1,5 +1,23 @@
 import SwiftUI
 
+enum SettingsTab: String, CaseIterable, Identifiable {
+    case general
+    case workflows
+    case audio
+    case services
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .general: "General"
+        case .workflows: "Workflows"
+        case .audio: "Audio"
+        case .services: "Services"
+        }
+    }
+}
+
 struct SettingsView: View {
     @EnvironmentObject private var store: ImportStore
     @Environment(\.dismiss) private var dismiss
@@ -14,6 +32,7 @@ struct SettingsView: View {
     @State private var loadedContextTokens: Int?
     @State private var maxContextTokens: Int?
     @State private var storageBytes: Int64?
+    @State private var tab: SettingsTab = .general
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -30,22 +49,36 @@ struct SettingsView: View {
                 .buttonStyle(.borderless)
                 .help("Close Settings")
             }
-            .padding(.horizontal, 28)
-            .padding(.top, 24)
-            .padding(.bottom, 10)
+            .padding(.horizontal, Space.xxl)
+            .padding(.top, Space.xl)
+            .padding(.bottom, Space.m)
+
+            Picker("Section", selection: $tab) {
+                ForEach(SettingsTab.allCases) { section in
+                    Text(section.label).tag(section)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 440)
+            .padding(.horizontal, Space.xxl)
+            .padding(.bottom, Space.l)
+
+            Divider()
 
             ScrollView {
                 Form {
-                    generalSection
-                    workflowsSection
-                    audioSection
-                    storageSection
-                    servicesSection
+                    switch tab {
+                    case .general: generalSection
+                    case .workflows: workflowsSection
+                    case .audio: audioSection
+                    case .services: servicesSection
+                    }
                 }
                 .formStyle(.grouped)
-                .frame(maxWidth: 860, alignment: .leading)
-                .padding(.horizontal, 24)
-                .padding(.bottom, 28)
+                .frame(maxWidth: 720, alignment: .leading)
+                .padding(.horizontal, Space.xl)
+                .padding(.bottom, Space.xxl)
             }
         }
         .background(Color(nsColor: .textBackgroundColor))
@@ -58,55 +91,53 @@ struct SettingsView: View {
     }
 
     private var generalSection: some View {
-        Section("General") {
-            Picker("Default workflow", selection: $store.settings.defaultWorkflow) {
-                ForEach(store.settings.workflows.filter(\.isEnabled)) { workflow in
-                    Text(workflow.name).tag(workflow.id)
+        Group {
+            Section("Startup") {
+                Picker("Default workflow", selection: $store.settings.defaultWorkflow) {
+                    ForEach(store.settings.workflows.filter(\.isEnabled)) { workflow in
+                        Text(workflow.name).tag(workflow.id)
+                    }
                 }
+                .help("Used by watch folders, and preselected in the main window.")
+                Toggle("Check watch folders at launch", isOn: $store.settings.checkWatchFoldersAtLaunch)
             }
-            Toggle("Check watch folders when the app starts", isOn: $store.settings.checkWatchFoldersAtLaunch)
-            Toggle("Use a date spoken in the recording", isOn: $store.settings.useSpokenDateFromTranscript)
-            Text("If you say a date out loud in the recording, it's used instead of the file's own date — which is often wrong after copying or syncing.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text("General settings apply to every workflow.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+
+            Section("Dates") {
+                Toggle("Use a date spoken in the recording", isOn: $store.settings.useSpokenDateFromTranscript)
+                Text("Copying or syncing a recording often resets its file date. A spoken date, when present, overrides it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
     private var audioSection: some View {
-        Section("Audio") {
-            Text("Turn Normalize and Compress on or off from the checkboxes in the main window. Here you only set how they sound.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        Group {
+            Section("Before transcribing") {
+                Toggle("Normalize (\u{2212}16 LUFS)", isOn: $store.settings.normalizeAudio)
+                    .help("Evens out level so quiet recordings transcribe better. Needs ffmpeg.")
+                Text("Runs on a working copy. The original file is never changed.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
-            Text("Normalize")
-                .font(.subheadline.weight(.medium))
-            Text("Evens out volume so quiet recordings are easier to transcribe and listen back to. Runs before transcribing, on a working copy — your original file is never changed.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Divider()
-
-            Text("Compress")
-                .font(.subheadline.weight(.medium))
-            Picker("Quality", selection: $store.settings.compressionBitrateKbps) {
-                ForEach(AudioCompressor.bitrateChoicesKbps, id: \.self) { bitrate in
-                    Text(bitrateLabel(bitrate)).tag(bitrate)
+            Section("Exported audio") {
+                Toggle("Compress", isOn: $store.settings.compressAudioOnExport)
+                Picker("Bitrate", selection: $store.settings.compressionBitrateKbps) {
+                    ForEach(AudioCompressor.bitrateChoicesKbps, id: \.self) { bitrate in
+                        Text("\(bitrate) kbps").tag(bitrate)
+                    }
                 }
+                .disabled(!store.settings.compressAudioOnExport)
+                Picker("Channels", selection: $store.settings.compressionForceMono) {
+                    Text("Mono").tag(true)
+                    Text("Keep source").tag(false)
+                }
+                .disabled(!store.settings.compressAudioOnExport)
+                Text("Files smaller than the target bitrate remain as they are.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            Picker("Channels", selection: $store.settings.compressionForceMono) {
-                Text("Mono (smaller file)").tag(true)
-                Text("Keep source channels").tag(false)
-            }
-            Text("Shrinks the exported audio file. Files that are already small enough are left as they are.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Text("Audio settings apply to every workflow's exported audio.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
         }
     }
 
@@ -119,134 +150,141 @@ struct SettingsView: View {
     }
 
     private var workflowsSection: some View {
-        Section("Workflows") {
-            HStack {
-                Picker("Workflow", selection: $selectedWorkflowID) {
-                    ForEach(store.settings.workflows) { workflow in
-                        Text(workflow.name).tag(workflow.id)
+        Group {
+            Section {
+                HStack {
+                    Picker("Workflow", selection: $selectedWorkflowID) {
+                        ForEach(store.settings.workflows) { workflow in
+                            Text(workflow.name).tag(workflow.id)
+                        }
                     }
+                    Spacer()
+                    Button {
+                        let workflow = store.addWorkflow()
+                        selectedWorkflowID = workflow.id
+                    } label: {
+                        Label("Add", systemImage: "plus")
+                    }
+                    Button {
+                        store.deleteWorkflow(id: selectedWorkflowID)
+                        selectedWorkflowID = store.settings.defaultWorkflow
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                    .disabled(store.settings.workflows.count <= 1)
                 }
-                Spacer()
-                Button {
-                    let workflow = store.addWorkflow()
-                    selectedWorkflowID = workflow.id
-                } label: {
-                    Label("Add", systemImage: "plus")
-                }
-                Button {
-                    store.deleteWorkflow(id: selectedWorkflowID)
-                    selectedWorkflowID = store.settings.defaultWorkflow
-                } label: {
-                    Label("Delete", systemImage: "trash")
-                }
-                .disabled(store.settings.workflows.count <= 1)
             }
 
             if let binding = workflowBinding(for: selectedWorkflowID) {
-                WorkflowPolicyEditor(policy: binding, isDefault: store.settings.defaultWorkflow == selectedWorkflowID) {
+                WorkflowPolicyEditor(
+                    policy: binding,
+                    isDefault: store.settings.defaultWorkflow == selectedWorkflowID
+                ) {
                     store.settings.defaultWorkflow = selectedWorkflowID
                 }
             }
         }
     }
 
-    private var storageSection: some View {
-        Section("Storage") {
-            HStack {
-                Text("App Cache")
-                Spacer()
-                Text(storageBytes.map(FileSizeFormatter.storageText) ?? "Measuring...")
-                    .foregroundStyle(.secondary)
-            }
-            .task { storageBytes = await ImportStore.storageUsage() }
-            Text("Cache contains only temporary processing copies, never original audio files.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Button("Clear Cache") {
-                store.clearCache()
-                Task { storageBytes = await ImportStore.storageUsage() }
-            }
-            .disabled(store.hasActiveProcessing)
-            .help(store.hasActiveProcessing ? "Wait until active processing finishes before clearing the cache." : "Remove app-managed temporary copies that are no longer needed.")
-        }
-    }
 
     private var servicesSection: some View {
-        Section("Services") {
-            TextField("MacWhisper CLI path", text: $store.settings.macWhisperPath)
-            HStack {
-                Text(macWhisperStatus)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                Spacer()
-                Button(isChecking ? "Checking..." : "Check") {
-                    checkMacWhisper()
-                }
-                .disabled(isChecking)
-            }
-
-            TextField("ffmpeg path", text: $store.settings.ffmpegPath)
-            HStack {
-                Text(ffmpegStatus)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                Spacer()
-                Button(isCheckingFFmpeg ? "Checking..." : "Check") {
-                    checkFFmpeg()
-                }
-                .disabled(isCheckingFFmpeg)
-            }
-
-            Divider()
-
-            TextField("LM Studio base URL", text: $store.settings.lmStudioBaseURL)
-            Picker("Model", selection: modelSelectionBinding) {
-                Text("First loaded model").tag("")
-                ForEach(lmStudioModels, id: \.self) { model in
-                    Text(model).tag(model)
-                }
-            }
-            HStack {
-                Text(lmStudioStatus)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                Spacer()
-                Button(isLoadingModels ? "Loading..." : "Refresh Models") {
-                    refreshModels()
-                }
-                .disabled(isLoadingModels)
-            }
-            VStack(alignment: .leading, spacing: 8) {
+        Group {
+            Section("Transcription") {
+                TextField("MacWhisper", text: $store.settings.macWhisperPath)
                 HStack {
-                    Text("Analysis transcript limit")
-                        .font(.caption.weight(.medium))
+                    Text(macWhisperStatus)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
+                        .lineLimit(2)
                     Spacer()
-                    if loadedContextTokens != nil {
-                        Button("Use Safe Limit") {
-                            applySafeTranscriptLimit()
-                        }
-                        .buttonStyle(.borderless)
+                    Button(isChecking ? "Checking\u{2026}" : "Check") { checkMacWhisper() }
+                        .disabled(isChecking)
+                }
+
+                TextField("ffmpeg", text: $store.settings.ffmpegPath)
+                HStack {
+                    Text(ffmpegStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    Spacer()
+                    Button(isCheckingFFmpeg ? "Checking\u{2026}" : "Check") { checkFFmpeg() }
+                        .disabled(isCheckingFFmpeg)
+                }
+            }
+
+            Section("Analysis") {
+                TextField("LM Studio", text: $store.settings.lmStudioBaseURL)
+                Picker("Model", selection: modelSelectionBinding) {
+                    Text("First loaded model").tag("")
+                    ForEach(lmStudioModels, id: \.self) { model in
+                        Text(model).tag(model)
                     }
                 }
+                HStack {
+                    Text(lmStudioStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    Spacer()
+                    Button(isLoadingModels ? "Loading\u{2026}" : "Refresh") { refreshModels() }
+                        .disabled(isLoadingModels)
+                }
+
+                HStack {
+                    Text("Transcript limit")
+                    Spacer()
+                    TextField("Transcript limit", value: $store.settings.maxTranscriptCharactersForAnalysis, format: .number)
+                        .labelsHidden()
+                        .frame(width: 110)
+                    Text("characters")
+                        .foregroundStyle(.secondary)
+                    if loadedContextTokens != nil {
+                        Button("Safe Limit") { applySafeTranscriptLimit() }
+                    }
+                }
+                Slider(value: transcriptLimitBinding, in: 6000...transcriptSliderUpperBound, step: 1000)
                 Text(contextSummary)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("Cache") {
                 HStack {
-                    TextField(
-                        "Transcript limit",
-                        value: $store.settings.maxTranscriptCharactersForAnalysis,
-                        format: .number
-                    )
-                    .frame(width: 180)
-                    Text("characters")
+                    Text("Temporary copies")
+                    Spacer()
+                    Text(storageBytes.map(FileSizeFormatter.storageText) ?? "Measuring\u{2026}")
                         .foregroundStyle(.secondary)
+                    Button("Clear") {
+                        store.clearCache()
+                        Task { storageBytes = await ImportStore.storageUsage() }
+                    }
+                    .disabled(store.hasActiveProcessing)
+                    .help(store.hasActiveProcessing ? "Wait until processing finishes." : "Remove temporary copies that are no longer needed.")
                 }
-                Slider(
-                    value: transcriptLimitBinding,
-                    in: 6000...transcriptSliderUpperBound,
-                    step: 1000
-                )
+                .task { storageBytes = await ImportStore.storageUsage() }
+
+                Picker("Delete", selection: storagePolicyBinding) {
+                    ForEach(ProcessingStoragePolicy.allCases) { policy in
+                        Text(policy.label).tag(policy)
+                    }
+                }
+                Text("Only working copies live here, never your originals. Applies to every workflow.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// The stored policy is per-workflow, but in practice this is a machine-level
+    /// preference, so setting it here writes it to every workflow at once.
+    private var storagePolicyBinding: Binding<ProcessingStoragePolicy> {
+        Binding {
+            store.settings.processingStoragePolicy
+        } set: { policy in
+            store.settings.processingStoragePolicy = policy
+            for index in store.settings.workflows.indices {
+                store.settings.workflows[index].processingStoragePolicy = policy
             }
         }
     }
@@ -454,92 +492,81 @@ struct WorkflowPolicyEditor: View {
     var makeDefault: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Everything below applies only to this workflow — other workflows are unaffected.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-
-            TextField("Name", text: $policy.name)
-            Toggle("Enabled", isOn: $policy.isEnabled)
-            Toggle("Default workflow", isOn: defaultBinding)
-
-            Picker("Source behavior", selection: $policy.sourceBehavior) {
-                ForEach(SourceBehavior.allCases) { behavior in
-                    Text(behavior.label).tag(behavior)
-                }
-            }
-            if policy.sourceBehavior.usesWatchFolder {
-                FolderPathRow(title: "Watch folder", path: $policy.watchFolderPath)
-                Toggle("Include subfolders", isOn: $policy.includeWatchFolderSubfolders)
-            }
-
-            Picker("Transcript", selection: $policy.transcriptBehavior) {
-                ForEach(visibleTranscriptBehaviors) { behavior in
-                    Text(behavior.label).tag(behavior)
-                }
-            }
-            if policy.transcriptBehavior != .doNotExportTranscript {
-                FolderPathRow(title: transcriptFolderTitle, path: $policy.destinationPath)
-            }
-
-            Picker("Audio file", selection: $policy.audioFileBehavior) {
-                ForEach(AudioFileBehavior.allCases) { behavior in
-                    Text(behavior.label).tag(behavior)
-                }
-            }
-            if policy.audioFileBehavior == .copyToFolder || policy.audioFileBehavior == .moveToFolder {
-                FolderPathRow(title: "Audio folder", path: $policy.audioDestinationPath)
-            }
-
-            Toggle("Review before export", isOn: reviewBeforeExportBinding)
-            Text(reviewBeforeExportBinding.wrappedValue
-                ? "Stops after transcribing so you can open the memo, check or edit the title, summary and transcript, and pick a different workflow — before anything is exported."
-                : "Exports automatically once transcribed and analysed, with no pause to check it first.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Divider()
-
-            Toggle("Write title & summary with AI", isOn: $policy.usesSmartAnalysis)
-            Text(policy.usesSmartAnalysis
-                ? "Uses LM Studio to come up with a title, summary and filename from what was said."
-                : "Skips that step. The filename and title just reuse the original file name — much faster, good when you've already named the file yourself.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            if policy.transcriptBehavior != .doNotExportTranscript {
-                Toggle("Title line in the note", isOn: $policy.noteIncludesTitle)
-                Picker("Summary in the note", selection: $policy.summaryStyle) {
-                    ForEach(SummaryStyle.allCases) { style in
-                        Text(style.label).tag(style)
+        Group {
+            Section("Source") {
+                TextField("Name", text: $policy.name)
+                Toggle("Enabled", isOn: $policy.isEnabled)
+                Toggle("Use as default", isOn: defaultBinding)
+                Picker("Recordings come from", selection: $policy.sourceBehavior) {
+                    ForEach(SourceBehavior.allCases) { behavior in
+                        Text(behavior.label).tag(behavior)
                     }
                 }
-                .disabled(!policy.usesSmartAnalysis)
+                if policy.sourceBehavior.usesWatchFolder {
+                    FolderPathRow(title: "Watch folder", path: $policy.watchFolderPath)
+                    Toggle("Include subfolders", isOn: $policy.includeWatchFolderSubfolders)
+                }
             }
 
-            TextField("Filename pattern", text: $policy.filenamePattern)
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(FilenamePattern.preview(pattern: policy.filenamePattern, workflowName: policy.name))
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                    if !policy.usesSmartAnalysis, FilenamePattern.requiresAnalysis(pattern: policy.filenamePattern) {
-                        Text("This pattern needs smart analysis. Use {filename} or {date} instead.")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
+            Section("Output") {
+                Picker("Note", selection: $policy.transcriptBehavior) {
+                    ForEach(visibleTranscriptBehaviors) { behavior in
+                        Text(behavior.label).tag(behavior)
                     }
                 }
-                Spacer()
-                PopoverHelp()
-            }
-        }
-    }
+                if policy.transcriptBehavior != .doNotExportTranscript {
+                    FolderPathRow(title: noteFolderTitle, path: $policy.destinationPath)
+                }
 
-    private var reviewBeforeExportBinding: Binding<Bool> {
-        Binding {
-            policy.reviewBehavior != .autoExportWhenReady
-        } set: { shouldReview in
-            policy.reviewBehavior = shouldReview ? .requireReview : .autoExportWhenReady
+                Picker("Audio", selection: $policy.audioFileBehavior) {
+                    ForEach(AudioFileBehavior.allCases) { behavior in
+                        Text(behavior.label).tag(behavior)
+                    }
+                }
+                if policy.audioFileBehavior == .copyToFolder || policy.audioFileBehavior == .moveToFolder {
+                    FolderPathRow(title: "Audio folder", path: $policy.audioDestinationPath)
+                }
+            }
+
+            Section("Review & analysis") {
+                Picker("Review before import", selection: $policy.reviewBehavior) {
+                    ForEach(ReviewBehavior.allCases) { behavior in
+                        Text(behavior.label).tag(behavior)
+                    }
+                }
+                Toggle("Analyze with LM Studio", isOn: $policy.usesSmartAnalysis)
+                    .help("Writes the title, summary and filename slug from what was said. Off is much faster.")
+                if policy.transcriptBehavior != .doNotExportTranscript {
+                    Toggle("Title line in the note", isOn: $policy.noteIncludesTitle)
+                    Picker("Summary in the note", selection: $policy.summaryStyle) {
+                        ForEach(SummaryStyle.allCases) { style in
+                            Text(style.label).tag(style)
+                        }
+                    }
+                    .disabled(!policy.usesSmartAnalysis)
+                }
+            }
+
+            Section("Filename") {
+                TextField("Pattern", text: $policy.filenamePattern)
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: Space.xs) {
+                        Text(FilenamePattern.preview(pattern: policy.filenamePattern, workflowName: policy.name))
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                        if !policy.usesSmartAnalysis, FilenamePattern.requiresAnalysis(pattern: policy.filenamePattern) {
+                            Text("This pattern needs analysis. Use {filename} or {date} instead.")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                    Spacer()
+                    PopoverHelp()
+                }
+                Text("With analysis off, {slug} and {title} have nothing to fill them \u{2014} build the pattern from {filename} and {date} instead.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -547,14 +574,11 @@ struct WorkflowPolicyEditor: View {
         [.appendToMonthlyNote, .createMarkdownFile, .doNotExportTranscript]
     }
 
-    private var transcriptFolderTitle: String {
+    private var noteFolderTitle: String {
         switch policy.transcriptBehavior {
-        case .appendToMonthlyNote:
-            return "Monthly note folder"
-        case .createMarkdownFile, .saveTranscriptOnly:
-            return "Markdown folder"
-        case .doNotExportTranscript:
-            return "Transcript folder"
+        case .appendToMonthlyNote: "Monthly note folder"
+        case .createMarkdownFile, .saveTranscriptOnly: "Note folder"
+        case .doNotExportTranscript: "Note folder"
         }
     }
 

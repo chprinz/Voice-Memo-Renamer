@@ -15,19 +15,28 @@ enum QueueViewMode: String, CaseIterable, Identifiable {
     }
 }
 
-enum CurrentStatusFilter {
+/// A lens on one list rather than a separate mode. "Needs you" is the only state
+/// that actually waits for a person; "Failed" is everything that stopped.
+enum QueueFilter: String, CaseIterable, Identifiable {
     case all
-    case needsAction
-    case needsAttention
+    case needsYou
+    case failed
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .all: "All"
+        case .needsYou: "Needs you"
+        case .failed: "Failed"
+        }
+    }
 
     var statuses: Set<ImportStatus> {
         switch self {
-        case .all:
-            return []
-        case .needsAction:
-            return [.readyForReview]
-        case .needsAttention:
-            return [.needsAttention, .failed]
+        case .all: []
+        case .needsYou: [.readyForReview]
+        case .failed: [.needsAttention, .failed]
         }
     }
 }
@@ -45,12 +54,17 @@ enum ConnectivityState {
         }
     }
 
-    var tooltip: String {
+    var summary: String {
         switch self {
         case .ok: "Connected"
-        case .unknown: "Status unknown"
-        case .unavailable(let message): message
+        case .unknown: "Not checked yet"
+        case .unavailable: "No connection"
         }
+    }
+
+    var detail: String? {
+        if case .unavailable(let message) = self { return message }
+        return nil
     }
 
     var isAvailable: Bool {
@@ -62,45 +76,71 @@ enum ConnectivityState {
 struct ContentView: View {
     @EnvironmentObject private var store: ImportStore
     @State private var mode: QueueViewMode = .current
-    @State private var inspectedItemID: ImportItem.ID?
+    @State private var selectedItemID: ImportItem.ID?
     @State private var showingSettings = false
     @State private var showingClearConfirmation = false
     @State private var pendingClearMode: QueueViewMode?
-    @State private var pendingClearStatusFilter: CurrentStatusFilter = .all
-    @State private var currentStatusFilter: CurrentStatusFilter = .all
+    @State private var pendingClearFilter: QueueFilter = .all
+    @State private var filter: QueueFilter = .all
+    @State private var searchText = ""
+    @State private var sessionWorkflow = ""
     @State private var isTargeted = false
     @State private var macWhisperState: ConnectivityState = .unknown
     @State private var lmStudioState: ConnectivityState = .unknown
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            if store.items.isEmpty {
-                Spacer(minLength: 28)
-                importDropZone
-                importNotices
-                Spacer(minLength: 80)
-            } else {
-                importDropZone
-                importNotices
-                listToolbar
+            serviceBanner
+            importNotices
+            importDropZone
+            Divider()
+            HStack(spacing: 0) {
+                sidebar
+                    .frame(width: 316)
                 Divider()
-                queue
+                detailPane
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                ServiceBadge(
+                    name: "MacWhisper",
+                    role: "transcribes recordings",
+                    state: macWhisperState,
+                    isActive: isMacWhisperActive
+                )
+                ServiceBadge(
+                    name: "LM Studio",
+                    role: "writes titles and summaries",
+                    state: lmStudioState,
+                    isActive: isLMStudioActive
+                )
+                Button {
+                    showingSettings = true
+                } label: {
+                    Label("Settings", systemImage: "gearshape")
+                }
+                .keyboardShortcut(",", modifiers: .command)
+                .help("Settings")
+            }
+        }
         .onDrop(of: supportedTypes, isTargeted: $isTargeted) { providers in
             handleDrop(providers)
         }
-        .sheet(item: inspectedItemBinding) { item in
-            ImportDetailView(item: item)
-                .environmentObject(store)
-                .frame(minWidth: 720, idealWidth: 800, minHeight: 620, idealHeight: 700)
+        .overlay {
+            if isTargeted {
+                RoundedRectangle(cornerRadius: 0)
+                    .strokeBorder(Color.accentColor, lineWidth: 3)
+                    .background(Color.accentColor.opacity(0.06))
+                    .allowsHitTesting(false)
+            }
         }
         .sheet(isPresented: $showingSettings) {
             SettingsView()
                 .environmentObject(store)
-                .frame(minWidth: 860, idealWidth: 980, minHeight: 680, idealHeight: 760)
+                .frame(minWidth: 720, idealWidth: 780, minHeight: 620, idealHeight: 740)
         }
         .confirmationDialog(clearDialogTitle, isPresented: $showingClearConfirmation, titleVisibility: .visible) {
             Button(clearDialogButtonTitle, role: .destructive) {
@@ -108,117 +148,255 @@ struct ContentView: View {
             }
             Button("Cancel", role: .cancel) {
                 pendingClearMode = nil
-                pendingClearStatusFilter = .all
+                pendingClearFilter = .all
             }
         } message: {
             Text(clearDialogMessage)
         }
+        .onAppear(perform: adoptDefaultWorkflow)
         .task(id: connectivityRefreshKey) {
             await refreshConnectivityLoop()
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 12) {
-            Text("Voice Memo Renamer")
-                .font(.headline)
+    // MARK: - Drop zone
 
-            Spacer()
-
-            ServiceStatusIndicator(label: "MW", state: macWhisperState, isActive: isMacWhisperActive)
-                .help("MacWhisper CLI: \(macWhisperState.tooltip)")
-            ServiceStatusIndicator(label: "LM", state: lmStudioState, isActive: isLMStudioActive)
-                .help("LM Studio: \(lmStudioState.tooltip)")
-
-            Button {
-                showingSettings = true
-            } label: {
-                Label("Settings", systemImage: "gearshape")
-            }
-            .buttonStyle(.bordered)
-            .keyboardShortcut(",", modifiers: .command)
-            .help("Settings")
-        }
-        .padding(.horizontal, 20)
-        .padding(.top, 16)
-        .padding(.bottom, 12)
-    }
-
+    /// Audio on the left, the destination on the right, an arrow between them. The
+    /// workflow picker reads as consequential because something points at it.
     private var importDropZone: some View {
-        HStack(alignment: .center, spacing: 18) {
-            ZStack {
-                Circle()
-                    .fill(isTargeted ? Color.accentColor.opacity(0.16) : Color.accentColor.opacity(0.10))
-                    .frame(width: store.items.isEmpty ? 64 : 52, height: store.items.isEmpty ? 64 : 52)
-                Image(systemName: isTargeted ? "arrow.down.doc.fill" : "waveform.badge.plus")
-                    .font(.system(size: store.items.isEmpty ? 28 : 24, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
-            }
+        HStack(spacing: 0) {
+            VStack(spacing: Space.s) {
+                ZStack {
+                    Circle()
+                        .fill(Color.accentColor.opacity(isTargeted ? 0.28 : 0.18))
+                        .frame(width: 44, height: 44)
+                    Image(systemName: isTargeted ? "arrow.down.doc.fill" : "waveform.badge.plus")
+                        .font(.system(size: 21, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                }
 
-            VStack(alignment: .leading, spacing: 10) {
                 Text(isTargeted ? "Drop to add audio" : "Drop audio here")
                     .font(.title3.weight(.semibold))
 
-                HStack(alignment: .center, spacing: 8) {
-                    Button {
-                        chooseAudioFiles()
-                    } label: {
-                        Label("or Choose Audio", systemImage: "plus")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-
-                    Image(systemName: "arrow.right")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                        .frame(width: 18, height: 30)
-                        .padding(.leading, 3)
-                        .padding(.trailing, 1)
-
-                    Picker("Manual workflow", selection: defaultWorkflowBinding) {
-                        ForEach(store.settings.workflows.filter(\.isEnabled)) { workflow in
-                            Text(workflow.name).tag(workflow.id)
-                        }
-                    }
-                    .labelsHidden()
-                    .controlSize(.large)
-                    .frame(width: 268, height: 30)
+                Button {
+                    chooseAudioFiles()
+                } label: {
+                    Label("Add Audio", systemImage: "plus")
                 }
-
-                HStack(spacing: 16) {
-                    Toggle("Even out volume", isOn: $store.settings.normalizeAudio)
-                        .help("Evens out quiet or uneven recordings before transcribing, so they come through more clearly. Needs ffmpeg — set its path in Settings → Services. Fine-tune this in Settings → Audio.")
-                    Toggle(compressToggleLabel, isOn: $store.settings.compressAudioOnExport)
-                        .help("Shrinks the exported audio file to save space. Change the quality in Settings → Audio.")
-                }
-                .toggleStyle(.checkbox)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
             }
+            .frame(maxWidth: .infinity)
 
-            Spacer(minLength: 20)
+            FlowArrow()
+                .frame(width: 76, height: 48)
+                .padding(.horizontal, Space.xl)
+
+            VStack(alignment: .leading, spacing: Space.xs) {
+                Text("WORKFLOW")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .kerning(0.4)
+
+                Picker("Workflow", selection: $sessionWorkflow) {
+                    ForEach(enabledWorkflows) { workflow in
+                        Text(workflow.name).tag(workflow.id)
+                    }
+                }
+                .labelsHidden()
+                .controlSize(.large)
+                .frame(minWidth: 220, maxWidth: 260, alignment: .leading)
+                .padding(.bottom, 2)
+                .help("Applies to audio you add here. The watch folder keeps the default set in Settings.")
+
+                ForEach(destinationRows, id: \.label) { row in
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Text(row.label)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 96, alignment: .leading)
+                        Text(row.value)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .font(.caption)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(18)
-        .frame(maxWidth: .infinity, minHeight: store.items.isEmpty ? 168 : 104)
+        .padding(.vertical, Space.xl)
+        .padding(.horizontal, Space.xxl)
+        .frame(maxWidth: .infinity)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
         .overlay {
             RoundedRectangle(cornerRadius: 8)
                 .strokeBorder(isTargeted ? Color.accentColor : Color(nsColor: .separatorColor), lineWidth: isTargeted ? 2 : 1)
         }
-        .padding(.horizontal, 20)
-        .padding(.bottom, 14)
+        .padding(.horizontal, Space.xl)
+        .padding(.top, Space.l)
+        .padding(.bottom, Space.m)
+    }
+
+    // MARK: - Sidebar
+
+    private var sidebar: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .bottom, spacing: Space.xl) {
+                QueueModeTabs(selection: modeSelection)
+                Spacer()
+                sidebarCountLabel
+            }
+            .padding(.horizontal, Space.l)
+            .padding(.top, Space.s)
+
+            SearchField(text: $searchText)
+                .padding(.horizontal, Space.l)
+                .padding(.top, Space.s)
+                .padding(.bottom, Space.s)
+
+            if mode == .current && (needsYouCount > 0 || failedCount > 0) {
+                Picker("Filter", selection: $filter) {
+                    ForEach(QueueFilter.allCases) { option in
+                        Text(filterLabel(option)).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .padding(.horizontal, Space.l)
+                .padding(.bottom, Space.s)
+            }
+
+            Divider()
+
+            if visibleItems.isEmpty {
+                EmptyQueueState(
+                    mode: mode,
+                    isSearching: !searchText.isEmpty,
+                    historyCount: historyItems.count,
+                    showHistory: { mode = .history; filter = .all }
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(selection: $selectedItemID) {
+                    ForEach(dayGroups) { group in
+                        Section(group.title) {
+                            ForEach(group.items) { item in
+                                QueueRow(item: item, policy: store.workflowPolicy(for: item.workflow))
+                                    .tag(item.id)
+                                    .listRowInsets(EdgeInsets(top: Space.s, leading: Space.m, bottom: Space.s, trailing: Space.m))
+                                    .contextMenu {
+                                        Button("Remove from List", role: .destructive) {
+                                            removeItem(item)
+                                        }
+                                    }
+                            }
+                        }
+                    }
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+            }
+
+            Divider()
+            HStack(spacing: Space.s) {
+                if store.hasActiveProcessing {
+                    Button {
+                        store.cancelActiveProcessing()
+                    } label: {
+                        Label("Cancel", systemImage: "xmark.circle")
+                    }
+                    .controlSize(.small)
+                }
+                Spacer()
+                if let clearAction {
+                    Menu {
+                        Button(role: .destructive) {
+                            requestClear(clearAction.mode, filter: clearAction.filter)
+                        } label: {
+                            Label(clearAction.title, systemImage: "trash")
+                        }
+                        .keyboardShortcut("k", modifiers: .command)
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .menuIndicator(.hidden)
+                    .frame(width: 28)
+                    .help("More actions")
+                }
+            }
+            .padding(.horizontal, Space.m)
+            .padding(.vertical, Space.s)
+        }
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+    }
+
+    @ViewBuilder
+    private var sidebarCountLabel: some View {
+        if !searchText.isEmpty {
+            Text("\(visibleItems.count) of \(modeItems.count)")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .padding(.bottom, 3)
+        } else if mode == .history {
+            Text("\(historyItems.count)")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .padding(.bottom, 3)
+        }
+    }
+
+    // MARK: - Detail
+
+    @ViewBuilder
+    private var detailPane: some View {
+        if let item = selectedItem {
+            ImportDetailPane(item: item)
+                .environmentObject(store)
+        } else {
+            EmptyDetailState(
+                watchFolders: activeWatchFolders,
+                hasItems: !store.items.isEmpty
+            )
+        }
+    }
+
+    // MARK: - Banners
+
+    @ViewBuilder
+    private var serviceBanner: some View {
+        if let message = serviceBannerMessage {
+            HStack(alignment: .top, spacing: Space.m) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(message.title)
+                        .font(.subheadline.weight(.semibold))
+                    Text(message.consequence)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Settings") { showingSettings = true }
+                    .controlSize(.small)
+            }
+            .padding(.horizontal, Space.xl)
+            .padding(.vertical, Space.m)
+            .background(Color.red.opacity(0.08))
+            .overlay(alignment: .bottom) { Divider() }
+        }
     }
 
     @ViewBuilder
     private var importNotices: some View {
         if !store.importNotices.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: Space.s) {
                 ForEach(store.importNotices) { notice in
-                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    HStack(alignment: .firstTextBaseline, spacing: Space.s) {
                         Image(systemName: notice.kind == .duplicate ? "doc.on.doc" : "exclamationmark.triangle")
                             .foregroundStyle(.orange)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Not imported: \(notice.filename)")
+                            Text("Not added: \(notice.filename)")
                                 .font(.caption.weight(.medium))
                             Text(notice.message)
                                 .font(.caption)
@@ -226,7 +404,7 @@ struct ContentView: View {
                         }
                         Spacer()
                         if notice.kind == .duplicate {
-                            Button("Import Anyway") {
+                            Button("Add Anyway") {
                                 importAudioFile(notice.url, allowDuplicate: true)
                                 store.dismissImportNotice(notice.id)
                             }
@@ -240,153 +418,40 @@ struct ContentView: View {
                         .buttonStyle(.borderless)
                         .help("Dismiss")
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
+                    .padding(.horizontal, Space.m)
+                    .padding(.vertical, Space.s)
                     .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 12)
+            .padding(.horizontal, Space.xl)
+            .padding(.top, Space.m)
         }
     }
 
-    private var listToolbar: some View {
-        HStack(alignment: .bottom, spacing: 14) {
-            QueueModeTabs(selection: modeSelection)
+    // MARK: - Derived state
 
-            if needsActionCount > 0 {
-                Button {
-                    mode = .current
-                    toggleStatusFilter(.needsAction)
-                } label: {
-                    Label("\(needsActionCount) need action", systemImage: "exclamationmark.circle.fill")
-                        .font(.caption.weight(.medium))
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.orange)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Color.orange.opacity(currentStatusFilter == .needsAction ? 0.16 : 0), in: RoundedRectangle(cornerRadius: 6))
-                .padding(.bottom, 5)
-                .help(currentStatusFilter == .needsAction ? "Show all current items" : "Show only items that need action")
-            }
-
-            if needsAttentionCount > 0 {
-                Button {
-                    mode = .current
-                    toggleStatusFilter(.needsAttention)
-                } label: {
-                    Label("\(needsAttentionCount) need attention", systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption.weight(.medium))
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.red)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Color.red.opacity(currentStatusFilter == .needsAttention ? 0.14 : 0), in: RoundedRectangle(cornerRadius: 6))
-                .padding(.bottom, 5)
-                .help(currentStatusFilter == .needsAttention ? "Show all current items" : "Show only items that need attention")
-            }
-
-            Spacer()
-
-            if store.hasActiveProcessing {
-                Button {
-                    store.cancelActiveProcessing()
-                } label: {
-                    Label("Cancel Active", systemImage: "xmark.circle")
-                }
-                .controlSize(.small)
-            }
-
-            toolbarMenu
-
-        }
-        .padding(.horizontal, 20)
-        .padding(.top, 2)
+    private var enabledWorkflows: [WorkflowPolicy] {
+        let enabled = store.settings.workflows.filter(\.isEnabled)
+        return enabled.isEmpty ? store.settings.workflows : enabled
     }
 
-    @ViewBuilder
-    private var toolbarMenu: some View {
-        if let clearAction {
-            Menu {
-                Button(role: .destructive) {
-                    requestClearView(clearAction.mode, statusFilter: clearAction.statusFilter)
-                } label: {
-                    Label(clearAction.title, systemImage: "trash")
-                }
-                .keyboardShortcut("k", modifiers: .command)
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(.system(size: 15, weight: .medium))
-                    .frame(width: 24, height: 24)
-            }
-            .menuIndicator(.hidden)
-            .help("More actions")
-            .padding(.bottom, 7)
-        }
+    private var activeWorkflowPolicy: WorkflowPolicy {
+        store.workflowPolicy(for: sessionWorkflow.isEmpty ? store.settings.defaultWorkflow : sessionWorkflow)
     }
 
-    private var queue: some View {
-        Group {
-            if visibleItems.isEmpty {
-                EmptyQueueState(
-                    mode: mode,
-                    hasAnyItems: !store.items.isEmpty,
-                    historyCount: historyItems.count,
-                    showHistory: { mode = .history }
-                )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollViewReader { proxy in
-                    List(visibleItems) { item in
-                        QueueRow(
-                            item: item,
-                            policy: store.workflowPolicy(for: item.workflow),
-                            action: { handlePrimaryAction(item) },
-                            remove: { removeItem(item) }
-                        )
-                        .id(item.id)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            inspectedItemID = item.id
-                        }
-                        .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
-                    }
-                    .listStyle(.inset)
-                    .scrollContentBackground(.hidden)
-                    .onChange(of: visibleItems.first?.id) { id in
-                        guard let id else { return }
-                        withAnimation(.easeOut(duration: 0.18)) {
-                            proxy.scrollTo(id, anchor: .top)
-                        }
-                    }
-                }
-            }
-        }
-        .background(isTargeted ? Color.accentColor.opacity(0.08) : Color.clear)
+    private var destinationRows: [(label: String, value: String)] {
+        WorkflowSummary.destinations(for: activeWorkflowPolicy)
     }
 
-    private var inspectedItemBinding: Binding<ImportItem?> {
-        Binding {
-            guard let inspectedItemID else { return nil }
-            return store.item(id: inspectedItemID)
-        } set: { item in
-            inspectedItemID = item?.id
-        }
+    private var activeWatchFolders: [String] {
+        store.settings.workflows
+            .filter { $0.isEnabled && $0.sourceBehavior.usesWatchFolder && !$0.watchFolderPath.isEmpty }
+            .map { PathDisplay.short($0.watchFolderPath, components: 2) }
     }
 
-    private var compressToggleLabel: String {
-        let channels = store.settings.compressionForceMono ? "mono" : "stereo"
-        return "Compress (\(store.settings.compressionBitrateKbps) kbps \(channels))"
-    }
-
-    private var defaultWorkflowBinding: Binding<String> {
-        Binding {
-            store.settings.defaultWorkflow
-        } set: { workflow in
-            store.setDefaultWorkflow(workflow)
-        }
+    private var selectedItem: ImportItem? {
+        guard let selectedItemID else { return nil }
+        return store.item(id: selectedItemID)
     }
 
     private var modeSelection: Binding<QueueViewMode> {
@@ -394,20 +459,26 @@ struct ContentView: View {
             mode
         } set: { newMode in
             mode = newMode
-            currentStatusFilter = .all
+            filter = .all
+        }
+    }
+
+    private var modeItems: [ImportItem] {
+        switch mode {
+        case .current: currentItems
+        case .history: historyItems
         }
     }
 
     private var visibleItems: [ImportItem] {
-        store.items.filter { item in
-            switch mode {
-            case .current:
-                item.status != .imported
-                    && (currentStatusFilter == .all || currentStatusFilter.statuses.contains(item.status))
-            case .history:
-                item.status == .imported
-            }
+        modeItems.filter { item in
+            let matchesFilter = mode == .history || filter == .all || filter.statuses.contains(item.status)
+            return matchesFilter && matchesSearch(item)
         }
+    }
+
+    private var dayGroups: [DayGrouping.Group] {
+        DayGrouping.groups(for: visibleItems)
     }
 
     private var currentItems: [ImportItem] {
@@ -418,78 +489,102 @@ struct ContentView: View {
         store.items.filter { $0.status == .imported }
     }
 
-    private var needsActionCount: Int {
-        currentItems.filter { CurrentStatusFilter.needsAction.statuses.contains($0.status) }.count
+    private var needsYouCount: Int {
+        currentItems.filter { QueueFilter.needsYou.statuses.contains($0.status) }.count
     }
 
-    private var needsAttentionCount: Int {
-        currentItems.filter { CurrentStatusFilter.needsAttention.statuses.contains($0.status) }.count
+    private var failedCount: Int {
+        currentItems.filter { QueueFilter.failed.statuses.contains($0.status) }.count
     }
 
-    private var isNeedsActionFilterActive: Bool {
-        mode == .current && currentStatusFilter != .all
-    }
-
-    private var clearAction: (mode: QueueViewMode, title: String, statusFilter: CurrentStatusFilter)? {
-        guard !visibleItems.isEmpty else { return nil }
-        switch mode {
-        case .current:
-            if isNeedsActionFilterActive {
-                return (QueueViewMode.current, currentStatusFilter == .needsAttention ? "Clear Needs Attention..." : "Clear Needs Action...", currentStatusFilter)
-            }
-            return (QueueViewMode.current, "Clear Current...", .all)
-        case .history:
-            return (QueueViewMode.history, "Clear History", .all)
+    private func filterLabel(_ option: QueueFilter) -> String {
+        switch option {
+        case .all: "All"
+        case .needsYou: needsYouCount > 0 ? "Needs you (\(needsYouCount))" : "Needs you"
+        case .failed: failedCount > 0 ? "Failed (\(failedCount))" : "Failed"
         }
     }
 
-    private var clearDialogTitle: String {
-        return "\(clearDialogButtonTitle)?"
+    private func matchesSearch(_ item: ImportItem) -> Bool {
+        guard !searchText.isEmpty else { return true }
+        let needle = searchText.lowercased()
+        if item.displayTitle.lowercased().contains(needle) { return true }
+        if item.originalFilename.lowercased().contains(needle) { return true }
+        if let summary = item.analysis?.summary, summary.lowercased().contains(needle) { return true }
+        if let transcript = item.transcript, transcript.lowercased().contains(needle) { return true }
+        return false
     }
+
+    private var serviceBannerMessage: (title: String, consequence: String)? {
+        if case .unavailable = lmStudioState {
+            return (
+                "No connection to LM Studio",
+                "Recordings still transcribe, then stop before the title and summary step."
+            )
+        }
+        if case .unavailable = macWhisperState {
+            return (
+                "No connection to MacWhisper",
+                "Recordings cannot be transcribed until this is reachable."
+            )
+        }
+        return nil
+    }
+
+    // MARK: - Clearing
+
+    private var clearAction: (mode: QueueViewMode, title: String, filter: QueueFilter)? {
+        guard !visibleItems.isEmpty else { return nil }
+        switch mode {
+        case .current:
+            if filter != .all {
+                return (.current, "Clear \(filter.label)…", filter)
+            }
+            return (.current, "Clear Current…", .all)
+        case .history:
+            return (.history, "Clear History", .all)
+        }
+    }
+
+    private var clearDialogTitle: String { "\(clearDialogButtonTitle)?" }
 
     private var clearDialogButtonTitle: String {
         switch pendingClearMode ?? .current {
         case .current:
-            switch pendingClearStatusFilter {
-            case .all: "Clear Current"
-            case .needsAction: "Clear Needs Action"
-            case .needsAttention: "Clear Needs Attention"
-            }
-        case .history: "Clear History"
+            pendingClearFilter == .all ? "Clear Current" : "Clear \(pendingClearFilter.label)"
+        case .history:
+            "Clear History"
         }
     }
 
     private var clearDialogMessage: String {
         let count = clearCount(for: pendingClearMode ?? .current)
-        let noun = count == 1 ? "item" : "items"
+        let noun = count == 1 ? "recording" : "recordings"
         switch pendingClearMode ?? .current {
         case .current:
-            if pendingClearStatusFilter != .all {
-                return "This removes \(count) visible \(noun) waiting for review or fixes. Source and exported files are not deleted."
+            if pendingClearFilter != .all {
+                return "Removes \(count) visible \(noun) from the list. No files are deleted."
             }
-            return "This cancels active processing and removes \(count) current \(noun) from the list. Source files are not deleted."
+            return "Cancels anything running and removes \(count) \(noun) from the list. No files are deleted."
         case .history:
-            return "This removes \(count) imported \(noun) from history. Source and exported files are not deleted."
+            return "Removes \(count) imported \(noun) from History. No files are deleted."
         }
     }
 
-    private func requestClearView(_ mode: QueueViewMode, statusFilter: CurrentStatusFilter) {
+    private func requestClear(_ mode: QueueViewMode, filter: QueueFilter) {
         pendingClearMode = mode
-        pendingClearStatusFilter = statusFilter
+        pendingClearFilter = filter
         switch mode {
-        case .current:
-            showingClearConfirmation = true
-        case .history:
-            performPendingClear()
+        case .current: showingClearConfirmation = true
+        case .history: performPendingClear()
         }
     }
 
     private func performPendingClear() {
-        let mode = pendingClearMode ?? .current
-        switch mode {
+        switch pendingClearMode ?? .current {
         case .current:
-            if pendingClearStatusFilter != .all {
-                let statuses = pendingClearStatusFilter.statuses
+            if pendingClearFilter != .all {
+                let statuses = pendingClearFilter.statuses
                 store.clearItems { statuses.contains($0.status) }
             } else {
                 store.clearItems { $0.status != .imported }
@@ -498,41 +593,25 @@ struct ContentView: View {
             store.clearItems { $0.status == .imported }
         }
         pendingClearMode = nil
-        pendingClearStatusFilter = .all
-        currentStatusFilter = .all
+        pendingClearFilter = .all
+        filter = .all
     }
 
     private func removeItem(_ item: ImportItem) {
         store.clearItems { $0.id == item.id }
-        if inspectedItemID == item.id {
-            inspectedItemID = nil
+        if selectedItemID == item.id {
+            selectedItemID = nil
         }
     }
 
     private func clearCount(for mode: QueueViewMode) -> Int {
         switch mode {
-        case .current:
-            if pendingClearStatusFilter != .all {
-                return visibleItems.count
-            }
-            return currentItems.count
-        case .history:
-            return historyItems.count
+        case .current: pendingClearFilter == .all ? currentItems.count : visibleItems.count
+        case .history: historyItems.count
         }
     }
 
-    private func toggleStatusFilter(_ filter: CurrentStatusFilter) {
-        currentStatusFilter = currentStatusFilter == filter ? .all : filter
-    }
-
-    private func modeLabel(for mode: QueueViewMode) -> String {
-        switch mode {
-        case .current:
-            return "Current"
-        case .history:
-            return "History"
-        }
-    }
+    // MARK: - Services
 
     private var supportedTypes: [UTType] {
         [.fileURL, .audio, .mpeg4Audio, .mp3, .wav, .aiff, .mpeg4Movie, .quickTimeMovie]
@@ -548,6 +627,15 @@ struct ContentView: View {
 
     private var isLMStudioActive: Bool {
         store.items.contains { $0.status == .analyzing }
+    }
+
+    private func adoptDefaultWorkflow() {
+        let known = enabledWorkflows.map(\.id)
+        if sessionWorkflow.isEmpty || !known.contains(sessionWorkflow) {
+            sessionWorkflow = known.contains(store.settings.defaultWorkflow)
+                ? store.settings.defaultWorkflow
+                : (known.first ?? store.settings.defaultWorkflow)
+        }
     }
 
     private func refreshConnectivityLoop() async {
@@ -572,7 +660,7 @@ struct ContentView: View {
         }
 
         guard let baseURL = URL(string: store.settings.lmStudioBaseURL) else {
-            await MainActor.run { lmStudioState = .unavailable("Invalid LM Studio URL") }
+            await MainActor.run { lmStudioState = .unavailable("The LM Studio address is not a valid URL.") }
             return
         }
         do {
@@ -584,31 +672,18 @@ struct ContentView: View {
             if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
                 await MainActor.run { lmStudioState = .ok }
             } else {
-                await MainActor.run { lmStudioState = .unavailable("LM Studio did not respond with a valid model list") }
+                await MainActor.run { lmStudioState = .unavailable("LM Studio answered, but not with a model list.") }
             }
         } catch {
             await MainActor.run { lmStudioState = .unavailable(error.localizedDescription) }
         }
     }
 
-    private func handlePrimaryAction(_ item: ImportItem) {
-        switch item.status {
-        case .new:
-            ImportProcessor(store: store).process(item.id)
-        case .readyForReview:
-            Task { await ImportProcessor(store: store).export(item.id) }
-        case .failed, .needsAttention:
-            ImportProcessor(store: store).process(item.id)
-        case .imported:
-            Finder.reveal(item.exportedMarkdownPath ?? item.originalPath)
-        default:
-            break
-        }
-    }
+    // MARK: - Import
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
         mode = .current
-        currentStatusFilter = .all
+        filter = .all
         store.clearImportNotices()
         providers.forEach(importDroppedProvider)
         return true
@@ -647,9 +722,10 @@ struct ContentView: View {
 
     private func importAudioFile(_ url: URL, allowDuplicate: Bool = false) {
         Task { @MainActor in
-            if let imported = await store.addItem(from: url, allowDuplicate: allowDuplicate) {
+            if let imported = await store.addItem(from: url, allowDuplicate: allowDuplicate, workflowOverride: sessionWorkflow) {
                 mode = .current
-                currentStatusFilter = .all
+                filter = .all
+                selectedItemID = imported.id
                 ImportProcessor(store: store).process(imported.id)
             }
         }
@@ -683,10 +759,11 @@ struct ContentView: View {
         if panel.runModal() == .OK {
             Task { @MainActor in
                 mode = .current
-                currentStatusFilter = .all
+                filter = .all
                 store.clearImportNotices()
                 for url in panel.urls {
-                    if let imported = await store.addItem(from: url) {
+                    if let imported = await store.addItem(from: url, workflowOverride: sessionWorkflow) {
+                        selectedItemID = imported.id
                         ImportProcessor(store: store).process(imported.id)
                     }
                 }
@@ -695,47 +772,83 @@ struct ContentView: View {
     }
 }
 
-struct ServiceStatusIndicator: View {
-    var label: String
+/// The waveform resolving into an arrow: sound becoming a filed note. Drawn rather
+/// than set as a glyph so the gradient can carry the eye toward the destination.
+struct FlowArrow: View {
+    var body: some View {
+        Canvas { context, size in
+            let scaleX = size.width / 76
+            let scaleY = size.height / 48
+            func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+                CGPoint(x: x * scaleX, y: y * scaleY)
+            }
+
+            let gradient = GraphicsContext.Shading.linearGradient(
+                Gradient(colors: [Color(nsColor: .secondaryLabelColor).opacity(0.55), Color.accentColor]),
+                startPoint: point(0, 24),
+                endPoint: point(70, 24)
+            )
+            let style = StrokeStyle(lineWidth: 2.4, lineCap: .round, lineJoin: .round)
+
+            var bars = Path()
+            bars.move(to: point(3, 18)); bars.addLine(to: point(3, 30))
+            bars.move(to: point(11, 13)); bars.addLine(to: point(11, 35))
+            bars.move(to: point(19, 20)); bars.addLine(to: point(19, 28))
+            context.stroke(bars, with: gradient, style: style)
+
+            var curve = Path()
+            curve.move(to: point(28, 30))
+            curve.addCurve(to: point(60, 20), control1: point(40, 30), control2: point(50, 27))
+            context.stroke(curve, with: gradient, style: style)
+
+            var head = Path()
+            head.move(to: point(51.1, 21.3))
+            head.addLine(to: point(60, 20))
+            head.addLine(to: point(55.7, 27.9))
+            context.stroke(head, with: gradient, style: style)
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+/// Ambient health. Shows the service name spelled out, a dot for reachability, and
+/// a pulse while that service is doing work.
+struct ServiceBadge: View {
+    var name: String
+    var role: String
     var state: ConnectivityState
     var isActive: Bool
     @State private var pulse = false
 
     var body: some View {
-        VStack(spacing: 2) {
-            ZStack(alignment: .topTrailing) {
-                Text(label)
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.primary)
-                    .frame(width: 28, height: 20)
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 5))
-                Circle()
-                    .fill(state.color)
-                    .frame(width: 7, height: 7)
-                    .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1))
-                    .offset(x: 2, y: -2)
-            }
-
-            Capsule()
-                .fill(activityColor)
-                .frame(width: 18, height: 3)
-                .opacity(activityOpacity)
-                .shadow(color: activityColor.opacity(isActive ? 0.6 : 0), radius: isActive ? 3 : 0)
+        HStack(spacing: 5) {
+            Circle()
+                .fill(state.color)
+                .frame(width: 7, height: 7)
+                .opacity(dotOpacity)
+            Text(name)
+                .font(.caption)
+                .foregroundStyle(state.isAvailable ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.primary))
         }
-        .frame(width: 30, height: 26)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .help(helpText)
         .animation(.easeInOut(duration: 0.25), value: state.color)
-        .onAppear { updatePulse() }
+        .onAppear(perform: updatePulse)
         .onChange(of: isActive) { _ in updatePulse() }
     }
 
-    private var activityColor: Color {
-        guard state.isAvailable else { return state.color }
-        return isActive ? .green : .secondary
+    private var helpText: String {
+        var text = "\(name) — \(role). \(state.summary)."
+        if let detail = state.detail {
+            text += "\n\(detail)"
+        }
+        return text
     }
 
-    private var activityOpacity: Double {
-        guard state.isAvailable else { return 0.75 }
-        return isActive ? (pulse ? 1 : 0.25) : 0.35
+    private var dotOpacity: Double {
+        guard state.isAvailable else { return 1 }
+        return isActive ? (pulse ? 1 : 0.3) : 1
     }
 
     private func updatePulse() {
@@ -751,71 +864,31 @@ struct ServiceStatusIndicator: View {
     }
 }
 
-struct EmptyQueueState: View {
-    var mode: QueueViewMode
-    var hasAnyItems: Bool
-    var historyCount: Int
-    var showHistory: () -> Void
+struct SearchField: View {
+    @Binding var text: String
 
     var body: some View {
-        VStack(spacing: 14) {
-            Image(systemName: icon)
-                .font(.system(size: 34, weight: .regular))
-                .foregroundStyle(Color.secondary)
-            Text(title)
-                .font(.title3.weight(.semibold))
-            Text(message)
-                .font(.subheadline)
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.caption)
                 .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 420)
-            if shouldShowHistoryButton {
+            TextField("Search title, summary, transcript", text: $text)
+                .textFieldStyle(.plain)
+                .font(.caption)
+            if !text.isEmpty {
                 Button {
-                    showHistory()
+                    text = ""
                 } label: {
-                    Label("Show History", systemImage: "clock.arrow.circlepath")
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.tertiary)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                .buttonStyle(.borderless)
+                .help("Clear search")
             }
         }
-        .padding(40)
-    }
-
-    private var icon: String {
-        switch mode {
-        case .current:
-            return hasAnyItems ? "tray" : "arrow.up.doc"
-        case .history:
-            return "clock.arrow.circlepath"
-        }
-    }
-
-    private var title: String {
-        switch mode {
-        case .current:
-            return hasAnyItems ? "No current imports" : "Ready for audio"
-        case .history:
-            return "No history yet"
-        }
-    }
-
-    private var message: String {
-        switch mode {
-        case .current:
-            if historyCount > 0 {
-                return "\(historyCount) imported \(historyCount == 1 ? "recording is" : "recordings are") in History."
-            }
-            return hasAnyItems
-                ? "Imported recordings move to History."
-                : "Use the drop zone above or choose audio files to start."
-        case .history:
-            return "Imported recordings collect here after they leave Current."
-        }
-    }
-
-    private var shouldShowHistoryButton: Bool {
-        mode == .current && historyCount > 0
+        .padding(.horizontal, Space.s)
+        .padding(.vertical, 5)
+        .background(Color(nsColor: .quaternaryLabelColor).opacity(0.22), in: RoundedRectangle(cornerRadius: 6))
     }
 }
 
@@ -823,162 +896,92 @@ struct QueueModeTabs: View {
     @Binding var selection: QueueViewMode
 
     var body: some View {
-        HStack(spacing: 20) {
+        HStack(spacing: Space.xl) {
             ForEach(QueueViewMode.allCases) { mode in
                 Button {
                     selection = mode
                 } label: {
-                    VStack(spacing: 8) {
+                    VStack(spacing: 7) {
                         Text(mode.label)
                             .font(.subheadline.weight(selection == mode ? .semibold : .medium))
                             .foregroundStyle(selection == mode ? .primary : .secondary)
                         Capsule()
                             .fill(selection == mode ? Color.accentColor : Color.clear)
-                            .frame(width: 28, height: 2)
+                            .frame(height: 2)
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(mode.label)
+                .accessibilityAddTraits(selection == mode ? [.isSelected, .isButton] : .isButton)
             }
         }
-        .accessibilityLabel("List")
     }
 }
 
+/// Slimmed to what identifies a recording in a list: state, title, resulting
+/// filename, one line of summary. Workflow details live in the detail panel.
 struct QueueRow: View {
     var item: ImportItem
     var policy: WorkflowPolicy
-    var action: () -> Void
-    var remove: () -> Void
-    @State private var isHovering = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            StatusGlyph(status: item.status)
-                .padding(.top, 2)
+        HStack(alignment: .top, spacing: Space.s) {
+            Circle()
+                .fill(statusColor)
+                .frame(width: 8, height: 8)
+                .padding(.top, 5)
 
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(item.status.label)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(statusColor)
-                    Text(item.displayTitle)
-                        .font(.headline)
-                        .lineLimit(1)
-                }
-
-                Text("-> \(generatedFilename)")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.displayTitle)
+                    .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
 
-                if let summary = item.analysis?.summary, !summary.isEmpty {
-                    Text(summary)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                } else {
-                    Text(placeholder)
-                        .font(.subheadline)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
+                Text(filenameLine)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
 
-                HStack(spacing: 6) {
-                    MetadataTag(text: policy.name)
-                    MetadataTag(text: plan)
-                }
-                .padding(.top, 2)
-            }
-
-            Spacer(minLength: 16)
-
-            primaryActionButton
-            removeButton
-        }
-        .padding(.vertical, 4)
-        .padding(.horizontal, 6)
-        .background(Color.primary.opacity(isHovering ? 0.045 : 0), in: RoundedRectangle(cornerRadius: 6))
-        .onHover { isHovering = $0 }
-        .animation(.easeOut(duration: 0.12), value: isHovering)
-    }
-
-    private var removeButton: some View {
-        Button(role: .destructive) {
-            remove()
-        } label: {
-            Image(systemName: "xmark.circle.fill")
-                .symbolRenderingMode(.hierarchical)
-                .font(.system(size: 15, weight: .semibold))
-                .frame(width: 24, height: 24)
-        }
-        .buttonStyle(.borderless)
-        .foregroundStyle(.secondary)
-        .padding(.top, 0)
-        .help("Remove from list")
-        .opacity(isHovering ? 1 : 0)
-        .allowsHitTesting(isHovering)
-        .animation(.easeOut(duration: 0.12), value: isHovering)
-    }
-
-    @ViewBuilder
-    private var primaryActionButton: some View {
-        if let actionTitle = item.primaryActionTitle {
-            if item.status == .readyForReview {
-                Button(actionTitle) {
-                    action()
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .padding(.top, 2)
-            } else {
-                Button(actionTitle) {
-                    action()
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .padding(.top, 2)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
+        .padding(.vertical, 2)
     }
 
-    private var generatedFilename: String {
-        if item.analysis == nil {
-            return "New filename pending"
+    private var filenameLine: String {
+        // Prefer the exported audio: with a monthly note every imported recording
+        // would otherwise show the same "2026-08.md" and identify nothing.
+        if item.status == .imported {
+            if let path = item.exportedAudioPath {
+                return (path as NSString).lastPathComponent
+            }
+            if let path = item.exportedMarkdownPath,
+               policy.transcriptBehavior != .appendToMonthlyNote {
+                return (path as NSString).lastPathComponent
+            }
         }
+        guard item.analysis != nil else { return "Filename pending" }
         return FilenamePattern.render(pattern: policy.filenamePattern, item: item, workflowName: policy.name)
     }
 
-    private var placeholder: String {
+    private var subtitle: String {
+        if let summary = item.analysis?.summary, !summary.isEmpty {
+            return summary
+        }
         switch item.status {
-        case .queued, .transcribing, .analyzing:
-            "Processing transcript and routing details."
+        case .queued, .transcribing, .analyzing, .importing:
+            return "Working on it…"
         case .new:
-            "Ready to process when you choose Try Again or open the item."
+            return "Waiting to start."
         case .failed, .needsAttention:
-            item.error?.message ?? "This item needs attention."
+            return item.error?.message ?? "Needs attention."
         default:
-            "Summary pending."
+            return "No summary yet."
         }
-    }
-
-    private var plan: String {
-        let transcript: String
-        switch policy.transcriptBehavior {
-        case .appendToMonthlyNote: transcript = "appends monthly note"
-        case .createMarkdownFile: transcript = "creates markdown"
-        case .saveTranscriptOnly: transcript = "saves transcript"
-        case .doNotExportTranscript: transcript = "no transcript export"
-        }
-
-        let audio: String
-        switch policy.audioFileBehavior {
-        case .copyToFolder: audio = "copies audio"
-        case .moveToFolder: audio = "moves audio"
-        case .renameInPlace: audio = "renames audio"
-        case .leaveInPlace: audio = "leaves audio"
-        }
-        return "\(audio) · \(transcript)"
     }
 
     private var statusColor: Color {
@@ -989,6 +992,91 @@ struct QueueRow: View {
         case .transcribing, .analyzing, .importing, .queued: .orange
         default: .secondary
         }
+    }
+}
+
+struct EmptyQueueState: View {
+    var mode: QueueViewMode
+    var isSearching: Bool
+    var historyCount: Int
+    var showHistory: () -> Void
+
+    var body: some View {
+        VStack(spacing: Space.m) {
+            Text(title)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+            if let message {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+            }
+            if mode == .current && !isSearching && historyCount > 0 {
+                Button("Show History", action: showHistory)
+                    .buttonStyle(.link)
+                    .font(.caption)
+            }
+        }
+        .padding(Space.xl)
+    }
+
+    private var title: String {
+        if isSearching { return "No matches" }
+        return mode == .current ? "Nothing waiting" : "No history yet"
+    }
+
+    private var message: String? {
+        if isSearching { return "Try a different word." }
+        switch mode {
+        case .current:
+            return historyCount > 0 ? "\(historyCount) imported so far." : nil
+        case .history:
+            return "Imported recordings collect here."
+        }
+    }
+}
+
+struct EmptyDetailState: View {
+    var watchFolders: [String]
+    var hasItems: Bool
+
+    var body: some View {
+        VStack(spacing: Space.l) {
+            Image(systemName: "arrow.down.doc")
+                .font(.system(size: 40, weight: .light))
+                .foregroundStyle(.tertiary)
+            Text(hasItems ? "Nothing selected" : "Ready for audio")
+                .font(.title3.weight(.semibold))
+            Text(hasItems
+                 ? "Pick a recording on the left to review it."
+                 : "Drop a file anywhere in this window, or use Add Audio.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
+
+            if !watchFolders.isEmpty {
+                HStack(spacing: 7) {
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 6, height: 6)
+                    Text("Watching")
+                        .foregroundStyle(.secondary)
+                    Text(watchFolders.joined(separator: ", "))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .font(.caption)
+                .padding(.horizontal, Space.m)
+                .padding(.vertical, 7)
+                .background(Color(nsColor: .quaternaryLabelColor).opacity(0.2), in: RoundedRectangle(cornerRadius: 7))
+                .padding(.top, Space.xs)
+            }
+        }
+        .padding(Space.xxl)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

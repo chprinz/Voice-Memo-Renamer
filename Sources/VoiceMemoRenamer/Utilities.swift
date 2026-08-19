@@ -153,7 +153,7 @@ enum AudioFileAccess {
                 try? FileManager.default.removeItem(at: destinationURL)
                 throw ProcessingFailure(
                     message: "Audio file changed while importing.",
-                    details: "The source file size changed while the app was making a local processing copy. Wait until iCloud or the recording app finishes writing the file, then try again.\n\nSource: \(sourceURL.path)"
+                    details: "The source file size changed while the app was making a temporary copy. Wait until iCloud or the recording app finishes writing the file, then try again.\n\nSource: \(sourceURL.path)"
                 )
             }
             return destinationURL
@@ -456,7 +456,7 @@ enum TranscriptDateExtractor {
         return nil
     }
 
-    /// Fallback for transcripts analysed without the model, e.g. when smart analysis is off.
+    /// Fallback for transcripts handled without the model, e.g. when analysis is off.
     /// Deliberately strict: only an explicitly written out date counts. A loose date
     /// detector matches things like "half past three" and silently invents a wrong day.
     static func detect(in transcript: String, referenceDate: Date) -> Date? {
@@ -739,11 +739,9 @@ enum FilenamePattern {
         var explanation: String
     }
 
-    /// The visible list is deliberately short: only tokens worth choosing between.
-    /// A few more (`{title}`, `{workflow}`, `{extension}`, `{filenameSlug}`,
-    /// `{originalName}`) still work if typed, kept for patterns saved before this list
-    /// was trimmed, but they don't add a real choice over what's shown here and stayed
-    /// undocumented clutter otherwise.
+    /// Every token the renderer actually understands. Anything listed here works;
+    /// anything not listed is not a token, so the popover and the renderer can no
+    /// longer disagree.
     static let documentedPlaceholders: [Placeholder] = [
         Placeholder(token: "{filename}", explanation: "Original filename, unchanged (spaces and capitals kept)"),
         Placeholder(token: "{date}", explanation: "Recording date, 2026-05-12"),
@@ -751,7 +749,12 @@ enum FilenamePattern {
         Placeholder(token: "{yyyy} {yy} {MM} {dd} {HH} {mm}", explanation: "Date/time parts, to build a custom format"),
         Placeholder(token: "{slug}", explanation: "Analysed long slug"),
         Placeholder(token: "{shortSlug}", explanation: "Analysed short slug"),
-        Placeholder(token: "{source}", explanation: "Where the file came from, jpr or manual")
+        Placeholder(token: "{source}", explanation: "Where the file came from, jpr or manual"),
+        Placeholder(token: "{title}", explanation: "Analysed title, made filename-safe"),
+        Placeholder(token: "{workflow}", explanation: "Name of the workflow that handled it"),
+        Placeholder(token: "{filenameSlug}", explanation: "Original filename as a slug (lowercase, hyphenated)"),
+        Placeholder(token: "{originalName}", explanation: "Same as {filenameSlug}, kept for older patterns"),
+        Placeholder(token: "{extension}", explanation: "File extension without the dot, m4a")
     ]
 
     /// Placeholders that only have a value once LM Studio has analysed the transcript.
@@ -784,9 +787,6 @@ enum FilenamePattern {
             "{shortSlug}": shortSlug,
             "{source}": sourceName(for: item).slugSafe,
             "{workflow}": workflowName.slugSafe,
-            "{location}": "location",
-            "{project}": "project",
-            "{initials}": "cp",
             "{filename}": originalBase.filesystemSafeFilename,
             "{filenameSlug}": originalBase.slugSafe,
             "{originalName}": originalBase.slugSafe,
@@ -814,11 +814,11 @@ enum FilenamePattern {
             recordingDateIsCertain: true
         )
         sample.analysis = AnalysisMetadata(
-            title: "Spaziergang und Entscheidung",
-            slug: "spaziergang-und-entscheidung",
-            shortSlug: "spaziergang-und-entscheidung",
-            summary: "Reflexion über Morgenruhe, innere Klarheit und eine Arbeitsentscheidung.",
-            themes: ["Journal", "Entscheidung"],
+            title: "Morning Walk And A Decision",
+            slug: "morning-walk-and-a-decision",
+            shortSlug: "morning-walk",
+            summary: "A short reflection on morning quiet and a decision about work.",
+            themes: ["Journal", "Decisions"],
             mood: nil,
             suggestedWorkflow: nil
         )

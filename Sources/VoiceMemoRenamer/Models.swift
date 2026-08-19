@@ -21,11 +21,11 @@ enum ImportStatus: String, Codable, CaseIterable, Identifiable {
         case .transcribing: "Transcribing"
         case .transcribed: "Transcribed"
         case .analyzing: "Analyzing"
-        case .readyForReview: "To Review"
+        case .readyForReview: "Review"
         case .importing: "Importing"
         case .imported: "Imported"
         case .failed: "Failed"
-        case .needsAttention: "Attention"
+        case .needsAttention: "Needs attention"
         }
     }
 }
@@ -76,9 +76,9 @@ enum TranscriptBehavior: String, Codable, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .appendToMonthlyNote: "Append to monthly note"
-        case .createMarkdownFile: "Create markdown file"
+        case .createMarkdownFile: "Create separate note"
         case .saveTranscriptOnly: "Save transcript only"
-        case .doNotExportTranscript: "Do not export transcript"
+        case .doNotExportTranscript: "Write no note"
         }
     }
 }
@@ -93,10 +93,10 @@ enum AudioFileBehavior: String, Codable, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .leaveInPlace: "Leave audio where it is"
-        case .copyToFolder: "Copy audio to folder"
-        case .moveToFolder: "Move audio to folder"
-        case .renameInPlace: "Rename original in place"
+        case .leaveInPlace: "Leave where it is"
+        case .copyToFolder: "Copy to folder"
+        case .moveToFolder: "Move to folder"
+        case .renameInPlace: "Rename in place"
         }
     }
 }
@@ -124,9 +124,9 @@ enum ReviewBehavior: String, Codable, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .autoExportWhenReady: "Auto-export when ready"
-        case .requireReview: "Require review"
-        case .requireReviewWhenUncertain: "Require review only when date/title/path is uncertain"
+        case .autoExportWhenReady: "Import automatically"
+        case .requireReview: "Always review first"
+        case .requireReviewWhenUncertain: "Review only when something is uncertain"
         }
     }
 }
@@ -171,10 +171,10 @@ enum ProcessingStoragePolicy: String, Codable, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .deleteAfterSuccessfulExport: "Delete processing copy after successful export"
-        case .keepForSevenDays: "Keep processing copy for 7 days"
-        case .keepUntilManuallyCleared: "Keep until manually cleared"
-        case .keepPermanently: "Keep permanently"
+        case .deleteAfterSuccessfulExport: "Until the recording is imported"
+        case .keepForSevenDays: "For 7 days"
+        case .keepUntilManuallyCleared: "Until I clear them"
+        case .keepPermanently: "Keep everything"
         }
     }
 }
@@ -427,6 +427,19 @@ struct ImportItem: Codable, Identifiable, Equatable {
             return title
         }
         return (originalFilename as NSString).deletingPathExtension
+    }
+
+    /// The path the exported audio landed at, if this workflow exported audio at
+    /// all. Matched against the exact operation kinds the exporter writes, so an
+    /// internal copy is never mistaken for a real export.
+    var exportedAudioPath: String? {
+        let exportKinds: Set<String> = [
+            "move", "copy",
+            "normalize_move", "normalize_copy",
+            "compress_move", "compress_copy",
+            "normalize_compress_move", "normalize_compress_copy"
+        ]
+        return fileOperations.last { exportKinds.contains($0.kind) }?.destinationPath
     }
 
     var primaryActionTitle: String? {

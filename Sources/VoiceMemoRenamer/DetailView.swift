@@ -11,6 +11,8 @@ struct ImportDetailView: View {
     @State private var summaryDraft = ""
     @State private var transcriptDraft = ""
     var item: ImportItem
+    /// The sheet needs its own close affordance; the split-view panel does not.
+    var showsCloseButton = true
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -37,14 +39,14 @@ struct ImportDetailView: View {
                             transcriptSection
                         } else {
                             filesSection
-                        }
 
-                        DisclosureGroup("Technical details", isExpanded: $showDetails) {
-                            technicalDetails
-                                .padding(.top, 8)
+                            DisclosureGroup("Technical details", isExpanded: $showDetails) {
+                                technicalDetails
+                                    .padding(.top, 8)
+                            }
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
                         }
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
                     }
                     .padding(24)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -70,7 +72,7 @@ struct ImportDetailView: View {
     /// Editing is only safe once a background task can no longer overwrite it —
     /// otherwise a finished analysis could silently clobber what you just typed.
     private var isEditable: Bool {
-        ![.new, .queued, .transcribing, .analyzing, .importing].contains(item.status)
+        ![.new, .queued, .transcribing, .analyzing, .importing, .imported].contains(item.status)
     }
 
     private func syncDrafts() {
@@ -131,11 +133,15 @@ struct ImportDetailView: View {
                     if let duration = item.durationSeconds {
                         Text(durationText(duration))
                     }
-                    Text(generatedFilename)
-                        .monospaced()
                 }
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+
+                Text(generatedFilename)
+                    .font(.subheadline.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
 
             Spacer()
@@ -145,14 +151,16 @@ struct ImportDetailView: View {
                     StatusPill(status: item.status)
                     primaryAction
                 }
-                Button {
-                    dismiss()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
+                if showsCloseButton {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Close")
                 }
-                .buttonStyle(.borderless)
-                .help("Close")
             }
         }
     }
@@ -215,14 +223,23 @@ struct ImportDetailView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Workflow")
                     .font(.headline)
-                Picker("Destination", selection: workflowBinding) {
-                    ForEach(store.settings.workflows.filter(\.isEnabled)) { workflow in
-                        Text(workflow.name).tag(workflow.id)
+                if isEditable {
+                    Picker("Workflow", selection: workflowBinding) {
+                        ForEach(store.settings.workflows.filter(\.isEnabled)) { workflow in
+                            Text(workflow.name).tag(workflow.id)
+                        }
                     }
+                    .labelsHidden()
+                    .frame(maxWidth: 260)
+                    .help("Where this recording will be filed \u{2014} the note and audio destination, and how it's imported.")
+                } else {
+                    Text(store.workflowPolicy(for: item.workflow).name)
+                        .font(.body)
                 }
-                .labelsHidden()
-                .frame(maxWidth: 260)
-                if let suggestion = suggestedWorkflow {
+                Text(WorkflowSummary.planTags(for: store.workflowPolicy(for: item.workflow)))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if isEditable, let suggestion = suggestedWorkflow {
                     HStack(spacing: 8) {
                         Text("The model would file this under \(suggestion.name).")
                             .font(.caption)
@@ -238,12 +255,14 @@ struct ImportDetailView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Recording date")
                     .font(.headline)
-                DatePicker("Recording date", selection: recordingDateBinding)
-                    .labelsHidden()
-                    .frame(maxWidth: 260)
-                Text(recordingDateExplanation)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if isEditable {
+                    DatePicker("Recording date", selection: recordingDateBinding)
+                        .labelsHidden()
+                        .frame(maxWidth: 260)
+                } else {
+                    Text(DateFormatter.itemDate.string(from: item.recordingDate))
+                        .font(.body)
+                }
             }
 
             if let themes = item.analysis?.themes, !themes.isEmpty {
@@ -263,7 +282,7 @@ struct ImportDetailView: View {
     private var filesSection: some View {
         VStack(alignment: .leading, spacing: 14) {
             FileActionRow(
-                title: "Source audio",
+                title: "Original file",
                 path: sourceAudioPath,
                 openInsteadOfReveal: false,
                 unavailableText: sourceAudioUnavailableText
@@ -334,9 +353,9 @@ struct ImportDetailView: View {
             if let sourcePath = item.sourcePath, sourcePath != item.originalPath, !isCachePath(sourcePath) {
                 DetailLine(label: "Original path", value: sourcePath)
             }
-            DetailLine(label: "Current audio", value: item.originalPath)
+            DetailLine(label: "Audio in use", value: item.originalPath)
             if let managedAudioPath = item.managedAudioPath {
-                DetailLine(label: "Processing copy", value: managedAudioPath)
+                DetailLine(label: "Temporary copy", value: managedAudioPath)
             }
             if let fingerprint = item.audioFingerprint {
                 DetailLine(label: "Audio fingerprint", value: fingerprint)
@@ -352,7 +371,7 @@ struct ImportDetailView: View {
                 DetailLine(label: markdownNoteTitle, value: exported)
             }
             ForEach(temporaryOperations) { operation in
-                DetailLine(label: operation.kind.replacingOccurrences(of: "_", with: " "), value: operation.destinationPath.isEmpty ? operation.sourcePath : operation.destinationPath)
+                DetailLine(label: Self.operationLabel(operation.kind), value: operation.destinationPath.isEmpty ? operation.sourcePath : operation.destinationPath)
             }
             if let error = item.error {
                 DetailLine(label: "Last error", value: error.technicalDetails)
@@ -360,21 +379,43 @@ struct ImportDetailView: View {
         }
     }
 
+    /// Internal operation kinds are snake_case identifiers meant for the log, not
+    /// for reading. Map the ones that surface here; fall back to a de-underscored
+    /// form so a new kind degrades instead of disappearing.
+    static func operationLabel(_ kind: String) -> String {
+        switch kind {
+        case "managed_processing_copy": "Temporary copy made"
+        case "delete_managed_processing_copy": "Temporary copy deleted"
+        case "delete_drop_import_copy": "Dropped copy deleted"
+        case "temporary_processing_copy": "Converted copy made"
+        case "delete_temporary_processing_copy": "Converted copy deleted"
+        case "normalize": "Normalized"
+        case "delete_normalized_copy": "Normalized copy deleted"
+        case "clear_cache": "Cleared from cache"
+        case "rename_original": "Original renamed"
+        case "append": "Appended to note"
+        case "write": "Note written"
+        case "move", "normalize_move", "compress_move", "normalize_compress_move": "Audio moved"
+        case "copy", "normalize_copy", "compress_copy", "normalize_compress_copy": "Audio copied"
+        default: kind.replacingOccurrences(of: "_", with: " ").capitalizedFirst
+        }
+    }
+
     private var technicalDetailsText: String {
         var lines = [
             "Original filename: \(item.sourceFilename ?? item.originalFilename)",
-            "Current audio: \(item.originalPath)",
+            "Audio in use: \(item.originalPath)",
             "Generated filename: \(generatedFilename)",
             "Slug: \(item.analysis?.slug ?? "Not analyzed")",
             "Short slug: \(item.analysis?.shortSlug ?? "Not analyzed")",
             "Recording date: \(item.recordingDateIsCertain ? "Certain" : "Estimated")"
         ]
         if let sourcePath = item.sourcePath, sourcePath != item.originalPath {
-            let label = isCachePath(sourcePath) ? "Imported temporary source" : "Original path"
+            let label = isCachePath(sourcePath) ? "Temporary copy" : "Original path"
             lines.insert("\(label): \(sourcePath)", at: 1)
         }
         if let managedAudioPath = item.managedAudioPath {
-            lines.insert("Processing copy: \(managedAudioPath)", at: min(2, lines.count))
+            lines.insert("Temporary copy: \(managedAudioPath)", at: min(2, lines.count))
         }
         if let fingerprint = item.audioFingerprint {
             lines.append("Audio fingerprint: \(fingerprint)")
@@ -383,7 +424,7 @@ struct ImportDetailView: View {
             lines.append("\(markdownNoteTitle): \(exported)")
         }
         lines.append(contentsOf: temporaryOperations.map { operation in
-            let label = operation.kind.replacingOccurrences(of: "_", with: " ")
+            let label = Self.operationLabel(operation.kind)
             let value = operation.destinationPath.isEmpty ? operation.sourcePath : operation.destinationPath
             return "\(label): \(value)"
         })
@@ -416,19 +457,6 @@ struct ImportDetailView: View {
         return store.settings.workflows.first { $0.id == suggestedID && $0.isEnabled }
     }
 
-    private var recordingDateExplanation: String {
-        switch item.recordingDateSource {
-        case .transcript:
-            return "Taken from a date spoken in the recording. It replaced the date stored in the file."
-        case .manual:
-            return "Set by you."
-        case .fileMetadata:
-            return item.recordingDateIsCertain
-                ? "Read from the file's creation date."
-                : "Estimated from file metadata. Adjust it before importing if needed."
-        }
-    }
-
     private var recordingDateBinding: Binding<Date> {
         Binding {
             item.recordingDate
@@ -446,7 +474,7 @@ struct ImportDetailView: View {
         case .queued, .transcribing, .analyzing:
             "Processing is running."
         case .needsAttention, .failed:
-            item.error?.message ?? "This memo needs attention."
+            item.error?.message ?? "This recording needs attention."
         default:
             "No summary yet."
         }
@@ -475,22 +503,22 @@ struct ImportDetailView: View {
 
     private var generatedFilename: String {
         let policy = store.workflowPolicy(for: item.workflow)
-        guard item.analysis != nil else { return "New filename pending" }
+        guard item.analysis != nil else { return "Filename pending" }
         return FilenamePattern.render(pattern: policy.filenamePattern, item: item, workflowName: policy.name)
     }
 
     private var markdownNoteTitle: String {
         let policy = store.workflowPolicy(for: item.workflow)
-        return policy.transcriptBehavior == .appendToMonthlyNote ? "Monthly note" : "Markdown note"
+        return policy.transcriptBehavior == .appendToMonthlyNote ? "Monthly note" : "Note"
     }
 
     private var markdownNoteUnavailableText: String {
         let policy = store.workflowPolicy(for: item.workflow)
         switch policy.transcriptBehavior {
         case .doNotExportTranscript:
-            return "Not generated by this workflow"
+            return "Not written by this workflow"
         case .appendToMonthlyNote, .createMarkdownFile, .saveTranscriptOnly:
-            return "Created after export"
+            return "Written when the recording is imported"
         }
     }
 
@@ -511,7 +539,7 @@ struct ImportDetailView: View {
         if let sourcePath = item.sourcePath ?? Optional(item.originalPath),
            isCachePath(sourcePath),
            !FileManager.default.fileExists(atPath: sourcePath) {
-            return "Temporary import copy was cleared. Original path was not provided."
+            return "The temporary copy was cleared and no original path was recorded."
         }
         return "Not available"
     }
@@ -620,7 +648,7 @@ struct AttentionBox: View {
             Text(error.message)
                 .font(.headline)
             HStack {
-                Button("Open in Finder") {
+                Button("Show in Finder") {
                     Finder.reveal(item.originalPath)
                 }
                 Button("Show technical details") {
@@ -684,5 +712,17 @@ struct FlowLayout: View {
                     .clipShape(Capsule())
             }
         }
+    }
+}
+
+
+/// The review panel as it appears in the split view. Same content as the sheet,
+/// without the sheet's close button, so moving through several recordings does not
+/// mean opening and dismissing each one.
+struct ImportDetailPane: View {
+    var item: ImportItem
+
+    var body: some View {
+        ImportDetailView(item: item, showsCloseButton: false)
     }
 }

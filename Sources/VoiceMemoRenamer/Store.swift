@@ -39,12 +39,16 @@ final class ImportStore: ObservableObject {
         recoverInterruptedItems()
         migrateLegacyWorkflowReferences()
         backfillMissingSourceFields()
+        pruneDropImports()
         startWatchFolderMonitoring()
         Task { await backfillAudioFingerprints() }
     }
 
     @discardableResult
-    func addItem(from sourceURL: URL, allowDuplicate: Bool = false) async -> ImportItem? {
+    /// `workflowOverride` is the workflow chosen in the main window. It applies to
+    /// audio the user adds by hand; watch-folder imports pass nil and keep matching
+    /// on their folder, so changing the picker never re-routes the watch folder.
+    func addItem(from sourceURL: URL, allowDuplicate: Bool = false, workflowOverride: String? = nil) async -> ImportItem? {
         guard sourceURL.isFileURL else { return nil }
         let didAccessSecurityScopedResource = sourceURL.startAccessingSecurityScopedResource()
         defer {
@@ -107,7 +111,7 @@ final class ImportStore: ObservableObject {
             recordingDate: recordingDate,
             recordingDateIsCertain: certain,
             durationSeconds: duration,
-            workflow: workflowForSource(sourceURL),
+            workflow: resolvedWorkflow(for: sourceURL, override: workflowOverride),
             workflowIsUserAssigned: true,
             status: importError == nil ? .queued : .needsAttention
         )
@@ -408,6 +412,13 @@ final class ImportStore: ObservableObject {
         try? FileManager.default.createDirectory(at: AppPaths.dropImportDirectory, withIntermediateDirectories: true)
     }
 
+    private func resolvedWorkflow(for sourceURL: URL, override: String?) -> String {
+        if let override, !override.isEmpty, settings.workflows.contains(where: { $0.id == override }) {
+            return override
+        }
+        return workflowForSource(sourceURL)
+    }
+
     private func workflowForSource(_ sourceURL: URL) -> String {
         settings.workflows.first { policy in
             isSource(sourceURL, inWatchFolderFor: policy)
@@ -541,6 +552,43 @@ final class ImportStore: ObservableObject {
             }
         }
         return total
+    }
+
+    static func isDropImportPath(_ path: String) -> Bool {
+        !path.isEmpty && path.hasPrefix(AppPaths.dropImportDirectory.path + "/")
+    }
+
+    /// Removes drop-import copies that are no longer doing any work: files no item
+    /// references at all, and copies belonging to recordings that are already
+    /// imported and whose audio verifiably landed somewhere else. Anything still in
+    /// flight, or whose audio exists nowhere but here, is left alone.
+    private func pruneDropImports() {
+        let fileManager = FileManager.default
+        guard let contents = try? fileManager.contentsOfDirectory(
+            at: AppPaths.dropImportDirectory,
+            includingPropertiesForKeys: nil
+        ) else { return }
+
+        var referenced: [String: ImportItem] = [:]
+        for item in items {
+            for path in [item.originalPath, item.sourcePath].compactMap({ $0 })
+            where Self.isDropImportPath(path) {
+                referenced[path] = item
+            }
+        }
+
+        for url in contents {
+            guard let item = referenced[url.path] else {
+                // No item points at it, so nothing can ever use it again.
+                try? fileManager.removeItem(at: url)
+                continue
+            }
+            guard item.status == .imported,
+                  workflowPolicy(for: item.workflow).processingStoragePolicy == .deleteAfterSuccessfulExport,
+                  let exportedAudioPath = item.exportedAudioPath,
+                  fileManager.fileExists(atPath: exportedAudioPath) else { continue }
+            try? fileManager.removeItem(at: url)
+        }
     }
 
     private func removeContents(of directory: URL) {

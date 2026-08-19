@@ -34,11 +34,11 @@ Settings for workflows, storage, MacWhisper, and LM Studio:
 
 ## What It Does
 
-- Drag and drop `.m4a`, `.mp3`, and `.wav` audio files.
+- Drag and drop audio: `.m4a`, `.m4b`, `.mp3`, `.wav`, `.wave`, `.w64`, `.aiff`, `.aif`, `.aifc`, `.caf`, `.flac`, `.aac`, `.opus`, `.ogg`, `.mp4`, `.mov`.
 - Copies audio into an app-managed local processing area.
 - Runs MacWhisper CLI for transcription.
 - Sends the transcript to LM Studio for local metadata generation.
-- Lets you review the title, summary, workflow, date, transcript, and technical details.
+- Lets you review the title, summary, workflow, date, transcript, and technical details in a side panel, so you can move through several recordings without closing anything.
 - Or skips analysis entirely per workflow, when a filename-based rename is all you need (see [Workflows Without Analysis](#workflows-without-analysis)).
 - Imports approved memos into an Obsidian monthly journal note.
 - Copies audio into the configured audio destination folder.
@@ -71,7 +71,7 @@ You can change workflows, destination folders, watch folders, filename patterns,
 
 Some recordings already carry their subject in the filename, and running them through
 LM Studio only produces a worse name than the one you typed yourself. Each workflow
-therefore has a **Smart analysis with LM Studio** switch in Settings → Workflows.
+therefore has an **Analyze with LM Studio** switch under Settings → Workflows → Review & analysis.
 
 With it off, the workflow transcribes and stops there. The title, slug, and filename
 all come from the original filename, so importing takes as long as transcription and
@@ -94,6 +94,25 @@ Two more per-workflow switches control what the exported note looks like: whethe
 starts with a bold title line, and whether the summary is written as one sentence,
 as bullet points, or left out completely.
 
+## Finding Things Again
+
+Recordings are grouped by day — Today, Yesterday, then the date — in both Current and
+History, and the search field above the list matches the title, the summary and the
+full transcript. That is usually the fastest way back to a recording: search a word you
+know you said.
+
+Current also carries a filter — All / Needs you / Failed — so a queue with one stuck
+import does not hide the rest.
+
+## Temporary Copies
+
+Audio dragged from an app that hands over data rather than a file is copied into the
+app's own folder first. Settings → Services → Cache shows how much that folder holds,
+and **Keep** decides when copies go: by default once the recording is imported, which
+is also when a copy stops being needed. A copy is only ever deleted if the audio
+verifiably exists somewhere else, so a workflow that leaves audio in place keeps its
+copy.
+
 ## Dates Spoken In The Recording
 
 File timestamps are frequently wrong, because copying or syncing a recording rewrites
@@ -102,15 +121,15 @@ date stated at the very beginning or end of a memo takes priority over the file'
 date. Only explicitly written out dates count (`14.08.2026`, `14. August 2026`,
 `2026-08-14`, `August 14, 2026`), optionally with a clock time next to them.
 
-Where the date came from is shown in the review sheet under the date picker, and you
+Where the date came from is shown in the review panel under the date picker, and you
 can always overrule it there.
 
 ## Audio Processing Options
 
-Two checkboxes sit right in the main window, next to the workflow picker in the drop zone: **Normalize** and **Compress**. They're global — not per-workflow — since whether a file needs processing depends on the source audio, not the destination. They apply whenever the workflow handling an import actually produces an export copy (audio file behavior "Copy audio to folder" or "Move audio to folder"); workflows that leave audio in place or rename in place are unaffected. The original source file is never modified — only the exported copy is affected.
+Both live under Settings → Audio: **Normalize** and **Compress**. They're global — not per-workflow — since whether a file needs processing depends on the source audio, not the destination. They apply whenever the workflow handling an import actually produces an export copy (audio file behavior "Copy audio to folder" or "Move audio to folder"); workflows that leave audio in place or rename in place are unaffected. The original source file is never modified — only the exported copy is affected.
 
 - **Normalize (-16 LUFS)**: two-pass EBU R128 loudness normalization (`ffmpeg`'s `loudnorm` filter, target -16 LUFS / -1.5 dBTP / LRA 11) at the source's own sample rate. It runs **before transcription**, because a quiet recording is harder for MacWhisper to read, and the same normalized copy is then reused for the exported audio — `loudnorm` never runs twice. Useful for recorders (e.g. wireless lav mics) whose raw levels vary a lot. Requires `ffmpeg`; its path is configurable under Settings → Services and defaults to `/opt/homebrew/bin/ffmpeg`, and with normalization on, a missing `ffmpeg` stops the import before transcription rather than after it.
-- **Compress**: runs at export only, on the exported copy. re-encodes the exported copy to AAC/M4A at the source sample rate, via the built-in `afconvert`. Bitrate (32–256 kbps) and mono vs. source channels are set under Settings → Exported Audio; the main-window checkbox label shows the current choice. M4A sources that are already below twice the target bitrate are left untouched to avoid a quality-losing second encode.
+- **Compress**: runs at export only, on the exported copy. re-encodes the exported copy to AAC/M4A at the source sample rate, via the built-in `afconvert`. Bitrate (32–256 kbps) and mono vs. source channels are set alongside it under Settings → Audio. M4A sources that are already below twice the target bitrate are left untouched to avoid a quality-losing second encode.
 
 So the full order is: normalize → transcribe → analyze → review → compress → export. The
 normalized copy lives in the processing cache and is deleted once the import succeeds.

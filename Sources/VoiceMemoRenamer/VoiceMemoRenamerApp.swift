@@ -68,7 +68,7 @@ struct MenuBarContent: View {
             NSApp.activate(ignoringOtherApps: true)
         }
         Divider()
-        Text("\(store.items.filter { $0.status == .readyForReview || $0.status == .needsAttention || $0.status == .failed }.count) need action")
+        Text("\(store.items.filter { $0.status == .readyForReview || $0.status == .needsAttention || $0.status == .failed }.count) need you")
         Divider()
         Button("Quit") {
             NSApp.terminate(nil)

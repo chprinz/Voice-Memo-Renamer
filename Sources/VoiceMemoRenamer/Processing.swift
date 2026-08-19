@@ -925,7 +925,7 @@ struct ObsidianJournalExporter {
             }
             throw ProcessingFailure(
                 message: "Original audio cannot be renamed in place.",
-                details: "The original file is no longer at its original path. Choose a copy or move workflow, or put the file back and try again.\n\nOriginal: \(item.originalPath)\nProcessing copy: \(item.managedAudioPath ?? "None")"
+                details: "The original file is no longer at its original path. Choose a copy or move workflow, or put the file back and try again.\n\nOriginal: \(item.originalPath)\nTemporary copy: \(item.managedAudioPath ?? "None")"
             )
         }
 
@@ -936,8 +936,8 @@ struct ObsidianJournalExporter {
             return originalURL
         }
         throw ProcessingFailure(
-            message: "Source audio is not available.",
-            details: "Original: \(item.originalPath)\nProcessing copy: \(item.managedAudioPath ?? "None")"
+            message: "The original audio is not available.",
+            details: "Original: \(item.originalPath)\nTemporary copy: \(item.managedAudioPath ?? "None")"
         )
     }
 
@@ -1261,8 +1261,8 @@ final class ImportProcessor {
             }
         }
         throw ProcessingFailure(
-            message: "Source audio is not available.",
-            details: "Original: \(item.originalPath)\nProcessing copy: \(item.managedAudioPath ?? "None")"
+            message: "The original audio is not available.",
+            details: "Original: \(item.originalPath)\nTemporary copy: \(item.managedAudioPath ?? "None")"
         )
     }
 
@@ -1292,7 +1292,7 @@ final class ImportProcessor {
         }
     }
 
-    /// Falls back to the original filename when a workflow runs without smart analysis.
+    /// Falls back to the original filename when a workflow runs without analysis.
     nonisolated static func filenameOnlyAnalysis(for item: ImportItem) -> AnalysisMetadata {
         let base = ((item.sourceFilename ?? item.originalFilename) as NSString).deletingPathExtension
         let slug = base.slugSafe
@@ -1367,8 +1367,27 @@ final class ImportProcessor {
         }
 
         let policy = store.workflowPolicy(for: updated.workflow)
-        guard policy.processingStoragePolicy == .deleteAfterSuccessfulExport,
-              let managedAudioPath = updated.managedAudioPath else {
+        guard policy.processingStoragePolicy == .deleteAfterSuccessfulExport else {
+            return updated
+        }
+
+        // Audio dragged from an app that hands over data rather than a file is copied
+        // into the app's own drop folder first. Once the workflow has put that audio
+        // somewhere real, the copy is dead weight — and nothing used to remove it, so
+        // the folder grew without limit. Only delete once the export is on disk.
+        if ImportStore.isDropImportPath(updated.originalPath),
+           let exportedAudioPath = updated.exportedAudioPath,
+           FileManager.default.fileExists(atPath: exportedAudioPath) {
+            try? FileManager.default.removeItem(at: URL(fileURLWithPath: updated.originalPath))
+            updated.fileOperations.append(FileOperationRecord(
+                kind: "delete_drop_import_copy",
+                sourcePath: updated.originalPath,
+                destinationPath: "",
+                occurredAt: Date()
+            ))
+        }
+
+        guard let managedAudioPath = updated.managedAudioPath else {
             return updated
         }
 
