@@ -8,7 +8,7 @@ This is not a general-purpose transcription product yet. It is a personal workfl
 
 ## Status
 
-Version `1.2.0`. First public release was `1.0.0`.
+Version `1.3.0`. First public release was `1.0.0`.
 
 The app currently assumes:
 
@@ -38,7 +38,7 @@ Settings for workflows, storage, MacWhisper, and LM Studio:
 - Copies audio into an app-managed local processing area.
 - Runs MacWhisper CLI for transcription.
 - Sends the transcript to LM Studio for local metadata generation.
-- Lets you review the title, summary, workflow, date, transcript, and technical details in a side panel, so you can move through several recordings without closing anything.
+- Lets you review the title, summary, workflow, date, transcript, and technical details in a side panel, so you can move through several recordings without closing anything. Once a recording is imported, that panel becomes read-only — the note and filename are already written by then, so edit before import if a workflow imports automatically.
 - Or skips analysis entirely per workflow, when a filename-based rename is all you need (see [Workflows Without Analysis](#workflows-without-analysis)).
 - Imports approved memos into an Obsidian monthly journal note.
 - Copies audio into the configured audio destination folder.
@@ -200,13 +200,13 @@ open -n .build/VoiceMemoRenamer.app
 To build a release app and package it as a DMG:
 
 ```bash
-Scripts/build-dmg.sh 1.2.0
+Scripts/build-dmg.sh 1.3.0
 ```
 
 The DMG is written to:
 
 ```text
-dist/VoiceMemoRenamer-1.2.0.dmg
+dist/VoiceMemoRenamer-1.3.0.dmg
 ```
 
 This script uses ad-hoc signing for local distribution. For broader public distribution, use a Developer ID certificate and notarization.
