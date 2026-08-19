@@ -66,34 +66,55 @@ struct SettingsView: View {
             }
             Toggle("Check watch folders when the app starts", isOn: $store.settings.checkWatchFoldersAtLaunch)
             Toggle("Use a date spoken in the recording", isOn: $store.settings.useSpokenDateFromTranscript)
-            Text("When the recording starts or ends with a spoken date, it replaces the date read from the file. File dates are often wrong for copied or synced audio.")
+            Text("If you say a date out loud in the recording, it's used instead of the file's own date — which is often wrong after copying or syncing.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            Text("General settings apply to every workflow.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
         }
     }
 
     private var audioSection: some View {
         Section("Audio") {
-            Toggle("Normalize loudness to -16 LUFS", isOn: $store.settings.normalizeAudio)
-            Text("Two-pass EBU R128 (ffmpeg loudnorm). Runs before transcription, so MacWhisper hears an even level instead of a quiet recording. The exported copy reuses the same normalized audio.")
+            Text("Turn Normalize and Compress on or off from the checkboxes in the main window. Here you only set how they sound.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Toggle("Compress to AAC/M4A", isOn: $store.settings.compressAudioOnExport)
-            Picker("Bitrate", selection: $store.settings.compressionBitrateKbps) {
-                ForEach(AudioCompressor.bitrateChoicesKbps, id: \.self) { bitrate in
-                    Text("\(bitrate) kbps").tag(bitrate)
-                }
-            }
-            .disabled(!store.settings.compressAudioOnExport)
-            Picker("Channels", selection: $store.settings.compressionForceMono) {
-                Text("Mono").tag(true)
-                Text("Keep source channels").tag(false)
-            }
-            .disabled(!store.settings.compressAudioOnExport)
-            Text("M4A sources that are already smaller than twice the target bitrate are copied untouched.")
+            Text("Normalize")
+                .font(.subheadline.weight(.medium))
+            Text("Evens out volume so quiet recordings are easier to transcribe and listen back to. Runs before transcribing, on a working copy — your original file is never changed.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            Divider()
+
+            Text("Compress")
+                .font(.subheadline.weight(.medium))
+            Picker("Quality", selection: $store.settings.compressionBitrateKbps) {
+                ForEach(AudioCompressor.bitrateChoicesKbps, id: \.self) { bitrate in
+                    Text(bitrateLabel(bitrate)).tag(bitrate)
+                }
+            }
+            Picker("Channels", selection: $store.settings.compressionForceMono) {
+                Text("Mono (smaller file)").tag(true)
+                Text("Keep source channels").tag(false)
+            }
+            Text("Shrinks the exported audio file. Files that are already small enough are left as they are.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text("Audio settings apply to every workflow's exported audio.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    private func bitrateLabel(_ bitrate: Int) -> String {
+        switch bitrate {
+        case ...48: "\(bitrate) kbps — smallest file, lower quality"
+        case 96, 128: "\(bitrate) kbps — good for spoken word"
+        default: "\(bitrate) kbps — larger file, closer to source quality"
         }
     }
 
@@ -434,6 +455,10 @@ struct WorkflowPolicyEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            Text("Everything below applies only to this workflow — other workflows are unaffected.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+
             TextField("Name", text: $policy.name)
             Toggle("Enabled", isOn: $policy.isEnabled)
             Toggle("Default workflow", isOn: defaultBinding)
@@ -467,13 +492,18 @@ struct WorkflowPolicyEditor: View {
             }
 
             Toggle("Review before export", isOn: reviewBeforeExportBinding)
+            Text(reviewBeforeExportBinding.wrappedValue
+                ? "Stops after transcribing so you can open the memo, check or edit the title, summary and transcript, and pick a different workflow — before anything is exported."
+                : "Exports automatically once transcribed and analysed, with no pause to check it first.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             Divider()
 
-            Toggle("Smart analysis with LM Studio", isOn: $policy.usesSmartAnalysis)
+            Toggle("Write title & summary with AI", isOn: $policy.usesSmartAnalysis)
             Text(policy.usesSmartAnalysis
-                ? "Generates title, summary and slug from the transcript."
-                : "Transcribe only. Titles and filenames come from the original filename, which is much faster.")
+                ? "Uses LM Studio to come up with a title, summary and filename from what was said."
+                : "Skips that step. The filename and title just reuse the original file name — much faster, good when you've already named the file yourself.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 

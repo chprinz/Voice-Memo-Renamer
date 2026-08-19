@@ -739,27 +739,20 @@ enum FilenamePattern {
         var explanation: String
     }
 
+    /// The visible list is deliberately short: only tokens worth choosing between.
+    /// A few more (`{title}`, `{workflow}`, `{extension}`, `{filenameSlug}`,
+    /// `{originalName}`) still work if typed, kept for patterns saved before this list
+    /// was trimmed, but they don't add a real choice over what's shown here and stayed
+    /// undocumented clutter otherwise.
     static let documentedPlaceholders: [Placeholder] = [
         Placeholder(token: "{filename}", explanation: "Original filename, unchanged (spaces and capitals kept)"),
-        Placeholder(token: "{filenameSlug}", explanation: "Original filename as a lowercase slug"),
         Placeholder(token: "{date}", explanation: "Recording date, 2026-05-12"),
         Placeholder(token: "{time}", explanation: "Recording time, 18-45"),
-        Placeholder(token: "{yyyy}", explanation: "Year"),
-        Placeholder(token: "{yy}", explanation: "Year, two digits"),
-        Placeholder(token: "{MM}", explanation: "Month"),
-        Placeholder(token: "{dd}", explanation: "Day"),
-        Placeholder(token: "{HH}", explanation: "Hour"),
-        Placeholder(token: "{mm}", explanation: "Minute"),
-        Placeholder(token: "{title}", explanation: "Analysed title as a slug"),
+        Placeholder(token: "{yyyy} {yy} {MM} {dd} {HH} {mm}", explanation: "Date/time parts, to build a custom format"),
         Placeholder(token: "{slug}", explanation: "Analysed long slug"),
         Placeholder(token: "{shortSlug}", explanation: "Analysed short slug"),
-        Placeholder(token: "{source}", explanation: "Where the file came from, jpr or manual"),
-        Placeholder(token: "{workflow}", explanation: "Workflow name as a slug"),
-        Placeholder(token: "{originalName}", explanation: "Same as {filenameSlug}"),
-        Placeholder(token: "{extension}", explanation: "File extension")
+        Placeholder(token: "{source}", explanation: "Where the file came from, jpr or manual")
     ]
-
-    static var placeholders: [String] { documentedPlaceholders.map(\.token) }
 
     /// Placeholders that only have a value once LM Studio has analysed the transcript.
     private static let analysisPlaceholders = ["{title}", "{slug}", "{shortSlug}"]

@@ -7,6 +7,9 @@ struct ImportDetailView: View {
     @State private var showDetails = false
     @State private var isHoveringTranscript = false
     @State private var copyToastMessage: String?
+    @State private var titleDraft = ""
+    @State private var summaryDraft = ""
+    @State private var transcriptDraft = ""
     var item: ImportItem
 
     var body: some View {
@@ -24,6 +27,7 @@ struct ImportDetailView: View {
                 }
                 .pickerStyle(.segmented)
                 .padding([.horizontal, .top], 24)
+                .onChange(of: selectedTab) { _ in commitTextEdits() }
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
@@ -58,15 +62,69 @@ struct ImportDetailView: View {
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
+        .onAppear { syncDrafts() }
+        .onChange(of: item.status) { _ in if isEditable { syncDrafts() } }
+        .onDisappear { commitTextEdits() }
+    }
+
+    /// Editing is only safe once a background task can no longer overwrite it —
+    /// otherwise a finished analysis could silently clobber what you just typed.
+    private var isEditable: Bool {
+        ![.new, .queued, .transcribing, .analyzing, .importing].contains(item.status)
+    }
+
+    private func syncDrafts() {
+        titleDraft = item.analysis?.title ?? item.displayTitle
+        summaryDraft = item.analysis?.summary ?? ""
+        transcriptDraft = item.transcript ?? ""
+    }
+
+    /// Saves edited title/summary/transcript back to the store. Called on tab switch,
+    /// on dismiss, and before the primary action — not on every keystroke, so typing
+    /// doesn't trigger a history.json write per character.
+    private func commitTextEdits() {
+        guard isEditable else { return }
+        var updated = item
+        var changed = false
+
+        if titleDraft != (item.analysis?.title ?? item.displayTitle) {
+            if updated.analysis == nil {
+                updated.analysis = ImportProcessor.filenameOnlyAnalysis(for: updated)
+            }
+            updated.analysis?.title = titleDraft
+            changed = true
+        }
+        if summaryDraft != (item.analysis?.summary ?? "") {
+            if updated.analysis == nil {
+                updated.analysis = ImportProcessor.filenameOnlyAnalysis(for: updated)
+            }
+            updated.analysis?.summary = summaryDraft
+            changed = true
+        }
+        if transcriptDraft != (item.transcript ?? "") {
+            updated.transcript = transcriptDraft
+            changed = true
+        }
+
+        if changed {
+            store.update(updated)
+        }
     }
 
     private var header: some View {
         HStack(alignment: .top, spacing: 18) {
             VStack(alignment: .leading, spacing: 8) {
-                Text(item.displayTitle)
-                    .font(.system(size: 24, weight: .semibold))
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
+                if isEditable {
+                    TextField("Title", text: $titleDraft, axis: .vertical)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 24, weight: .semibold))
+                        .lineLimit(1...2)
+                } else {
+                    Text(item.displayTitle)
+                        .font(.system(size: 24, weight: .semibold))
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
                 HStack(spacing: 10) {
                     Text(DateFormatter.itemDate.string(from: item.recordingDate))
@@ -135,10 +193,23 @@ struct ImportDetailView: View {
                         }
                     }
                 }
-                Text(item.analysis?.summary.nilIfBlank ?? placeholderText)
-                    .font(.body)
-                    .foregroundStyle(item.analysis?.summary.nilIfBlank == nil ? .secondary : .primary)
-                    .textSelection(.enabled)
+                if isEditable {
+                    TextEditor(text: $summaryDraft)
+                        .font(.body)
+                        .frame(minHeight: 60, maxHeight: 120)
+                        .padding(6)
+                        .background(Color(nsColor: .controlBackgroundColor))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 6)
+                                .strokeBorder(Color(nsColor: .separatorColor))
+                        }
+                } else {
+                    Text(item.analysis?.summary.nilIfBlank ?? placeholderText)
+                        .font(.body)
+                        .foregroundStyle(item.analysis?.summary.nilIfBlank == nil ? .secondary : .primary)
+                        .textSelection(.enabled)
+                }
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -209,22 +280,46 @@ struct ImportDetailView: View {
         }
     }
 
+    @ViewBuilder
     private var transcriptSection: some View {
-        ZStack(alignment: .topTrailing) {
-            Text(item.transcript ?? "Transcript will appear here after MacWhisper finishes.")
-                .font(.body.monospaced())
-                .foregroundStyle(item.transcript == nil ? .secondary : .primary)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            if isHoveringTranscript, let transcript = item.transcript, !transcript.isEmpty {
-                CopyButton(text: transcript, help: "Copy transcript") {
-                    showCopyToast("Transcript copied")
-                }
+        if isEditable {
+            ZStack(alignment: .topTrailing) {
+                TextEditor(text: $transcriptDraft)
+                    .font(.body.monospaced())
+                    .frame(minHeight: 240)
                     .padding(6)
+                    .background(Color(nsColor: .controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(Color(nsColor: .separatorColor))
+                    }
+
+                if isHoveringTranscript, !transcriptDraft.isEmpty {
+                    CopyButton(text: transcriptDraft, help: "Copy transcript") {
+                        showCopyToast("Transcript copied")
+                    }
+                        .padding(10)
+                }
             }
+            .onHover { isHoveringTranscript = $0 }
+        } else {
+            ZStack(alignment: .topTrailing) {
+                Text(item.transcript ?? "Transcript will appear here after MacWhisper finishes.")
+                    .font(.body.monospaced())
+                    .foregroundStyle(item.transcript == nil ? .secondary : .primary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                if isHoveringTranscript, let transcript = item.transcript, !transcript.isEmpty {
+                    CopyButton(text: transcript, help: "Copy transcript") {
+                        showCopyToast("Transcript copied")
+                    }
+                        .padding(6)
+                }
+            }
+            .onHover { isHoveringTranscript = $0 }
         }
-        .onHover { isHoveringTranscript = $0 }
     }
 
     private var technicalDetails: some View {
@@ -358,6 +453,7 @@ struct ImportDetailView: View {
     }
 
     private func handlePrimaryAction() {
+        commitTextEdits()
         switch item.status {
         case .new:
             ImportProcessor(store: store).process(item.id)

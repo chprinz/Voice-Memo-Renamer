@@ -186,10 +186,10 @@ struct ContentView: View {
                 }
 
                 HStack(spacing: 16) {
-                    Toggle("Normalize (-16 LUFS)", isOn: $store.settings.normalizeAudio)
-                        .help("Two-pass EBU R128 loudness normalization (ffmpeg loudnorm), applied before transcription so quiet recordings are easier for MacWhisper to read. The same normalized audio is what gets exported. Requires ffmpeg, path set in Settings → Services.")
+                    Toggle("Even out volume", isOn: $store.settings.normalizeAudio)
+                        .help("Evens out quiet or uneven recordings before transcribing, so they come through more clearly. Needs ffmpeg — set its path in Settings → Services. Fine-tune this in Settings → Audio.")
                     Toggle(compressToggleLabel, isOn: $store.settings.compressAudioOnExport)
-                        .help("Re-encodes the exported audio copy to AAC/M4A. Change bitrate and channels in Settings → Exported Audio. Already-compact M4A sources are left untouched.")
+                        .help("Shrinks the exported audio file to save space. Change the quality in Settings → Audio.")
                 }
                 .toggleStyle(.checkbox)
                 .font(.caption)
