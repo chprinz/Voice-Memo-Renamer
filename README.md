@@ -8,7 +8,7 @@ This is not a general-purpose transcription product yet. It is a personal workfl
 
 ## Status
 
-Version `1.1.1`. First public release was `1.0.0`.
+Version `1.2.0`. First public release was `1.0.0`.
 
 The app currently assumes:
 
@@ -39,6 +39,7 @@ Settings for workflows, storage, MacWhisper, and LM Studio:
 - Runs MacWhisper CLI for transcription.
 - Sends the transcript to LM Studio for local metadata generation.
 - Lets you review the title, summary, workflow, date, transcript, and technical details.
+- Or skips analysis entirely per workflow, when a filename-based rename is all you need (see [Workflows Without Analysis](#workflows-without-analysis)).
 - Imports approved memos into an Obsidian monthly journal note.
 - Copies audio into the configured audio destination folder.
 - Optionally compresses and/or loudness-normalizes the exported audio copy (see [Audio Processing Options](#audio-processing-options)).
@@ -66,14 +67,59 @@ and copies audio to:
 
 You can change workflows, destination folders, watch folders, filename patterns, and transcript/audio behavior in the app settings.
 
+## Workflows Without Analysis
+
+Some recordings already carry their subject in the filename, and running them through
+LM Studio only produces a worse name than the one you typed yourself. Each workflow
+therefore has a **Smart analysis with LM Studio** switch in Settings → Workflows.
+
+With it off, the workflow transcribes and stops there. The title, slug, and filename
+all come from the original filename, so importing takes as long as transcription and
+nothing else. Pair it with a filename pattern built from `{date}` and `{filename}`:
+
+```text
+{date}_{filename}   →   2026-08-14_2012 Quanjihao Manzhuan.m4a
+```
+
+The two placeholders that reuse the original name are:
+
+- `{filename}` — the original name, unchanged, so capitals and spaces survive.
+- `{filenameSlug}` — the original name as a lowercase slug.
+
+The pattern preview under the field shows a sample named `Original Filename.m4a`, so
+you can see at a glance which part of the result comes from the source file. The full
+placeholder list with explanations is behind the **?** button next to the preview.
+
+Two more per-workflow switches control what the exported note looks like: whether it
+starts with a bold title line, and whether the summary is written as one sentence,
+as bullet points, or left out completely.
+
+## Dates Spoken In The Recording
+
+File timestamps are frequently wrong, because copying or syncing a recording rewrites
+them. When Settings → General has **Use a date spoken in the recording** enabled, a
+date stated at the very beginning or end of a memo takes priority over the file's own
+date. Only explicitly written out dates count (`14.08.2026`, `14. August 2026`,
+`2026-08-14`, `August 14, 2026`), optionally with a clock time next to them.
+
+Where the date came from is shown in the review sheet under the date picker, and you
+can always overrule it there.
+
 ## Audio Processing Options
 
-Two checkboxes sit right in the main window, next to the workflow picker in the drop zone: **Normalize (-16 LUFS)** and **Compress (96 kbps mono)**. They're global — not per-workflow — since whether a file needs processing depends on the source audio, not the destination. They apply whenever the workflow handling an import actually produces an export copy (audio file behavior "Copy audio to folder" or "Move audio to folder"); workflows that leave audio in place or rename in place are unaffected. The original source file is never modified — only the exported copy is affected.
+Two checkboxes sit right in the main window, next to the workflow picker in the drop zone: **Normalize** and **Compress**. They're global — not per-workflow — since whether a file needs processing depends on the source audio, not the destination. They apply whenever the workflow handling an import actually produces an export copy (audio file behavior "Copy audio to folder" or "Move audio to folder"); workflows that leave audio in place or rename in place are unaffected. The original source file is never modified — only the exported copy is affected.
 
-- **Normalize (-16 LUFS)**: two-pass EBU R128 loudness normalization (`ffmpeg`'s `loudnorm` filter, target -16 LUFS / -1.5 dBTP / LRA 11) at the source's own sample rate. Useful for recorders (e.g. wireless lav mics) whose raw levels vary a lot. Requires `ffmpeg`; its path is configurable under Settings → Services and defaults to `/opt/homebrew/bin/ffmpeg`.
-- **Compress (96 kbps mono)**: re-encodes the exported copy to mono AAC/M4A at 96 kbps, at the source sample rate, via the built-in `afconvert`. Already-compact M4A sources (under ~200 kbps) are left untouched to avoid a quality-losing second encode.
+- **Normalize (-16 LUFS)**: two-pass EBU R128 loudness normalization (`ffmpeg`'s `loudnorm` filter, target -16 LUFS / -1.5 dBTP / LRA 11) at the source's own sample rate. It runs **before transcription**, because a quiet recording is harder for MacWhisper to read, and the same normalized copy is then reused for the exported audio — `loudnorm` never runs twice. Useful for recorders (e.g. wireless lav mics) whose raw levels vary a lot. Requires `ffmpeg`; its path is configurable under Settings → Services and defaults to `/opt/homebrew/bin/ffmpeg`, and with normalization on, a missing `ffmpeg` stops the import before transcription rather than after it.
+- **Compress**: runs at export only, on the exported copy. re-encodes the exported copy to AAC/M4A at the source sample rate, via the built-in `afconvert`. Bitrate (32–256 kbps) and mono vs. source channels are set under Settings → Exported Audio; the main-window checkbox label shows the current choice. M4A sources that are already below twice the target bitrate are left untouched to avoid a quality-losing second encode.
 
-If both are enabled, normalization runs first and compression runs on the normalized result.
+So the full order is: normalize → transcribe → analyze → review → compress → export. The
+normalized copy lives in the processing cache and is deleted once the import succeeds.
+
+Separately from all of this, audio in unusual sample formats — 32 bit float WAV from
+wireless field recorders, for instance — is converted to plain 16 bit PCM in the cache
+before transcription, and converted again as a retry if MacWhisper rejects a file. That
+conversion only ever feeds the transcriber. With normalization on it is usually not
+needed at all, since the normalized copy is already plain PCM.
 
 ## Privacy
 
@@ -93,7 +139,7 @@ The app does not intentionally send audio or transcripts to a cloud service. If 
 - MacWhisper CLI.
 - LM Studio with a loaded local model.
 - Optional: Obsidian with an existing vault.
-- Optional: `ffmpeg` (only if you enable loudness normalization on a workflow). Audio compression uses the built-in `afconvert`, no extra install needed.
+- Optional: `ffmpeg` (only if you enable loudness normalization; with it on, imports need `ffmpeg` before they can be transcribed). Audio compression and format conversion use the built-in `afconvert`, no extra install needed.
 
 ## Run The Downloaded App
 
@@ -135,13 +181,13 @@ open -n .build/VoiceMemoRenamer.app
 To build a release app and package it as a DMG:
 
 ```bash
-Scripts/build-dmg.sh 1.1.1
+Scripts/build-dmg.sh 1.2.0
 ```
 
 The DMG is written to:
 
 ```text
-dist/VoiceMemoRenamer-1.1.1.dmg
+dist/VoiceMemoRenamer-1.2.0.dmg
 ```
 
 This script uses ad-hoc signing for local distribution. For broader public distribution, use a Developer ID certificate and notarization.
@@ -153,6 +199,7 @@ This script uses ad-hoc signing for local distribution. For broader public distr
 - LM Studio is the only analysis backend right now.
 - The default workflow is opinionated around Obsidian, iCloud Drive, and monthly journal notes.
 - First-run setup is still manual.
+- Import history is written to disk on the main thread, so very large histories will eventually feel sluggish.
 - Public binary distribution is not yet a polished notarized installer flow.
 
 ## Future Ideas

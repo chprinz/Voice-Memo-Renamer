@@ -126,9 +126,18 @@ struct ImportDetailView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Summary")
                     .font(.headline)
-                Text(item.analysis?.summary ?? placeholderText)
+                if let points = item.analysis?.summaryPoints, !points.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(points, id: \.self) { point in
+                            Text("• \(point)")
+                                .font(.body)
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
+                Text(item.analysis?.summary.nilIfBlank ?? placeholderText)
                     .font(.body)
-                    .foregroundStyle(item.analysis == nil ? .secondary : .primary)
+                    .foregroundStyle(item.analysis?.summary.nilIfBlank == nil ? .secondary : .primary)
                     .textSelection(.enabled)
             }
 
@@ -142,19 +151,28 @@ struct ImportDetailView: View {
                 }
                 .labelsHidden()
                 .frame(maxWidth: 260)
+                if let suggestion = suggestedWorkflow {
+                    HStack(spacing: 8) {
+                        Text("The model would file this under \(suggestion.name).")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("Use") {
+                            applyWorkflow(suggestion.id)
+                        }
+                        .controlSize(.small)
+                    }
+                }
             }
 
-            if !item.recordingDateIsCertain {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Recording date")
-                        .font(.headline)
-                    DatePicker("Recording date", selection: recordingDateBinding)
-                        .labelsHidden()
-                        .frame(maxWidth: 260)
-                    Text("Estimated from file metadata. Adjust it before importing if needed.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Recording date")
+                    .font(.headline)
+                DatePicker("Recording date", selection: recordingDateBinding)
+                    .labelsHidden()
+                    .frame(maxWidth: 260)
+                Text(recordingDateExplanation)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             if let themes = item.analysis?.themes, !themes.isEmpty {
@@ -231,7 +249,10 @@ struct ImportDetailView: View {
             DetailLine(label: "Generated filename", value: generatedFilename)
             DetailLine(label: "Slug", value: item.analysis?.slug ?? "Not analyzed")
             DetailLine(label: "Short slug", value: item.analysis?.shortSlug ?? "Not analyzed")
-            DetailLine(label: "Recording date", value: item.recordingDateIsCertain ? "Certain" : "Estimated")
+            DetailLine(label: "Recording date", value: "\(item.recordingDateIsCertain ? "Certain" : "Estimated") - \(item.recordingDateSource.label)")
+            if let format = audioFormatSummary {
+                DetailLine(label: "Audio format", value: format)
+            }
             if let exported = item.exportedMarkdownPath {
                 DetailLine(label: markdownNoteTitle, value: exported)
             }
@@ -281,9 +302,35 @@ struct ImportDetailView: View {
         Binding {
             item.workflow
         } set: { workflow in
-            var updated = item
-            updated.workflow = workflow
-            store.update(updated)
+            applyWorkflow(workflow)
+        }
+    }
+
+    private func applyWorkflow(_ workflow: String) {
+        var updated = item
+        updated.workflow = workflow
+        updated.workflowIsUserAssigned = true
+        store.update(updated)
+    }
+
+    /// Shown only as a hint. The model never reassigns a workflow on its own.
+    private var suggestedWorkflow: WorkflowPolicy? {
+        guard let suggested = item.analysis?.suggestedWorkflow?.nilIfBlank else { return nil }
+        let suggestedID = WorkflowPolicy.canonicalID(suggested)
+        guard suggestedID != item.workflow else { return nil }
+        return store.settings.workflows.first { $0.id == suggestedID && $0.isEnabled }
+    }
+
+    private var recordingDateExplanation: String {
+        switch item.recordingDateSource {
+        case .transcript:
+            return "Taken from a date spoken in the recording. It replaced the date stored in the file."
+        case .manual:
+            return "Set by you."
+        case .fileMetadata:
+            return item.recordingDateIsCertain
+                ? "Read from the file's creation date."
+                : "Estimated from file metadata. Adjust it before importing if needed."
         }
     }
 
@@ -294,6 +341,7 @@ struct ImportDetailView: View {
             var updated = item
             updated.recordingDate = date
             updated.recordingDateIsCertain = true
+            updated.recordingDateSource = .manual
             store.update(updated)
         }
     }
@@ -314,7 +362,7 @@ struct ImportDetailView: View {
         case .new:
             ImportProcessor(store: store).process(item.id)
         case .readyForReview:
-            ImportProcessor(store: store).export(item.id)
+            Task { await ImportProcessor(store: store).export(item.id) }
         case .needsAttention, .failed:
             ImportProcessor(store: store).process(item.id)
         case .imported:
@@ -370,6 +418,13 @@ struct ImportDetailView: View {
             return "Temporary import copy was cleared. Original path was not provided."
         }
         return "Not available"
+    }
+
+    private var audioFormatSummary: String? {
+        guard let path = [item.managedAudioPath, item.originalPath, item.sourcePath]
+            .compactMap({ $0 })
+            .first(where: { FileManager.default.fileExists(atPath: $0) }) else { return nil }
+        return AudioInspector.formatSummary(for: URL(fileURLWithPath: path))
     }
 
     private var temporaryOperations: [FileOperationRecord] {

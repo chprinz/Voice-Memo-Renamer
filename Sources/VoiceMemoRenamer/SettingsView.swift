@@ -13,6 +13,7 @@ struct SettingsView: View {
     @State private var isLoadingModels = false
     @State private var loadedContextTokens: Int?
     @State private var maxContextTokens: Int?
+    @State private var storageBytes: Int64?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -37,6 +38,7 @@ struct SettingsView: View {
                 Form {
                     generalSection
                     workflowsSection
+                    audioSection
                     storageSection
                     servicesSection
                 }
@@ -63,6 +65,35 @@ struct SettingsView: View {
                 }
             }
             Toggle("Check watch folders when the app starts", isOn: $store.settings.checkWatchFoldersAtLaunch)
+            Toggle("Use a date spoken in the recording", isOn: $store.settings.useSpokenDateFromTranscript)
+            Text("When the recording starts or ends with a spoken date, it replaces the date read from the file. File dates are often wrong for copied or synced audio.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var audioSection: some View {
+        Section("Audio") {
+            Toggle("Normalize loudness to -16 LUFS", isOn: $store.settings.normalizeAudio)
+            Text("Two-pass EBU R128 (ffmpeg loudnorm). Runs before transcription, so MacWhisper hears an even level instead of a quiet recording. The exported copy reuses the same normalized audio.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Toggle("Compress to AAC/M4A", isOn: $store.settings.compressAudioOnExport)
+            Picker("Bitrate", selection: $store.settings.compressionBitrateKbps) {
+                ForEach(AudioCompressor.bitrateChoicesKbps, id: \.self) { bitrate in
+                    Text("\(bitrate) kbps").tag(bitrate)
+                }
+            }
+            .disabled(!store.settings.compressAudioOnExport)
+            Picker("Channels", selection: $store.settings.compressionForceMono) {
+                Text("Mono").tag(true)
+                Text("Keep source channels").tag(false)
+            }
+            .disabled(!store.settings.compressAudioOnExport)
+            Text("M4A sources that are already smaller than twice the target bitrate are copied untouched.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -103,14 +134,16 @@ struct SettingsView: View {
             HStack {
                 Text("App Cache")
                 Spacer()
-                Text(FileSizeFormatter.storageText(bytes: store.appStorageUsage()))
+                Text(storageBytes.map(FileSizeFormatter.storageText) ?? "Measuring...")
                     .foregroundStyle(.secondary)
             }
+            .task { storageBytes = await ImportStore.storageUsage() }
             Text("Cache contains only temporary processing copies, never original audio files.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Button("Clear Cache") {
                 store.clearCache()
+                Task { storageBytes = await ImportStore.storageUsage() }
             }
             .disabled(store.hasActiveProcessing)
             .help(store.hasActiveProcessing ? "Wait until active processing finishes before clearing the cache." : "Remove app-managed temporary copies that are no longer needed.")
@@ -435,11 +468,37 @@ struct WorkflowPolicyEditor: View {
 
             Toggle("Review before export", isOn: reviewBeforeExportBinding)
 
+            Divider()
+
+            Toggle("Smart analysis with LM Studio", isOn: $policy.usesSmartAnalysis)
+            Text(policy.usesSmartAnalysis
+                ? "Generates title, summary and slug from the transcript."
+                : "Transcribe only. Titles and filenames come from the original filename, which is much faster.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if policy.transcriptBehavior != .doNotExportTranscript {
+                Toggle("Title line in the note", isOn: $policy.noteIncludesTitle)
+                Picker("Summary in the note", selection: $policy.summaryStyle) {
+                    ForEach(SummaryStyle.allCases) { style in
+                        Text(style.label).tag(style)
+                    }
+                }
+                .disabled(!policy.usesSmartAnalysis)
+            }
+
             TextField("Filename pattern", text: $policy.filenamePattern)
-            HStack {
-                Text(FilenamePattern.preview(pattern: policy.filenamePattern, workflowName: policy.name))
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(FilenamePattern.preview(pattern: policy.filenamePattern, workflowName: policy.name))
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                    if !policy.usesSmartAnalysis, FilenamePattern.requiresAnalysis(pattern: policy.filenamePattern) {
+                        Text("This pattern needs smart analysis. Use {filename} or {date} instead.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
                 Spacer()
                 PopoverHelp()
             }
@@ -521,15 +580,25 @@ struct PopoverHelp: View {
         }
         .buttonStyle(.borderless)
         .popover(isPresented: $showingHelp) {
-            VStack(alignment: .leading, spacing: 8) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
                 Text("Placeholders")
                     .font(.headline)
-                Text(FilenamePattern.placeholders.joined(separator: "\n"))
-                    .font(.caption.monospaced())
-                    .textSelection(.enabled)
+                ForEach(FilenamePattern.documentedPlaceholders, id: \.token) { placeholder in
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(placeholder.token)
+                            .font(.caption.monospaced())
+                            .textSelection(.enabled)
+                        Text(placeholder.explanation)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(16)
             }
-            .padding(16)
-            .frame(width: 260)
+            .frame(width: 320, height: 420)
         }
     }
 }

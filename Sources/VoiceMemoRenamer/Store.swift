@@ -1,8 +1,25 @@
 import Foundation
 import SwiftUI
 
+/// Why a dropped or chosen file did not turn into a queue item.
+/// Without this the app silently ignored files, which looked like nothing happened at all.
+struct ImportNotice: Identifiable, Equatable {
+    enum Kind: Equatable {
+        case duplicate
+        case unsupported
+    }
+
+    var id = UUID()
+    var kind: Kind
+    var filename: String
+    var url: URL
+    var message: String
+}
+
 @MainActor
 final class ImportStore: ObservableObject {
+    @Published var importNotices: [ImportNotice] = []
+
     @Published var items: [ImportItem] = [] {
         didSet { saveItems() }
     }
@@ -21,11 +38,13 @@ final class ImportStore: ObservableObject {
         loadItems()
         recoverInterruptedItems()
         migrateLegacyWorkflowReferences()
-        backfillAudioFingerprints()
+        backfillMissingSourceFields()
         startWatchFolderMonitoring()
+        Task { await backfillAudioFingerprints() }
     }
 
-    func addItem(from sourceURL: URL) async -> ImportItem? {
+    @discardableResult
+    func addItem(from sourceURL: URL, allowDuplicate: Bool = false) async -> ImportItem? {
         guard sourceURL.isFileURL else { return nil }
         let didAccessSecurityScopedResource = sourceURL.startAccessingSecurityScopedResource()
         defer {
@@ -33,15 +52,27 @@ final class ImportStore: ObservableObject {
                 sourceURL.stopAccessingSecurityScopedResource()
             }
         }
-        guard AudioFileAccess.isSupportedAudioURL(sourceURL) else { return nil }
-        if isKnownImport(sourceURL: sourceURL, fingerprint: nil) {
+        guard AudioFileAccess.isSupportedAudioURL(sourceURL) else {
+            noteSkippedImport(
+                sourceURL,
+                kind: .unsupported,
+                message: "\(sourceURL.pathExtension.uppercased()) files are not supported. Supported: \(AudioFileAccess.supportedAudioExtensions.sorted().joined(separator: ", "))."
+            )
+            return nil
+        }
+        if !allowDuplicate, isKnownImport(sourceURL: sourceURL, fingerprint: nil) {
+            noteSkippedImport(sourceURL, kind: .duplicate, message: "This file was imported before.")
             return nil
         }
 
         var managedAudioURL: URL?
         var importError: ProcessingError?
         do {
-            managedAudioURL = try AudioFileAccess.createManagedCopy(from: sourceURL)
+            // Copying and hashing can take seconds on a large field recording, so both
+            // stay off the main actor to keep the window responsive.
+            managedAudioURL = try await Task.detached(priority: .userInitiated) {
+                try AudioFileAccess.createManagedCopy(from: sourceURL)
+            }.value
         } catch {
             let failure = error as? ProcessingFailure
             importError = ProcessingError(
@@ -52,11 +83,15 @@ final class ImportStore: ObservableObject {
         }
 
         let metadataURL = managedAudioURL ?? sourceURL
-        let fingerprint = managedAudioURL.flatMap { try? AudioFingerprint.sha256(for: $0) }
-        if isKnownImport(sourceURL: sourceURL, fingerprint: fingerprint) {
+        let copiedAudioURL = managedAudioURL
+        let fingerprint = await Task.detached(priority: .userInitiated) {
+            copiedAudioURL.flatMap { try? AudioFingerprint.sha256(for: $0) }
+        }.value
+        if !allowDuplicate, isKnownImport(sourceURL: sourceURL, fingerprint: fingerprint) {
             if let managedAudioURL {
                 try? FileManager.default.removeItem(at: managedAudioURL)
             }
+            noteSkippedImport(sourceURL, kind: .duplicate, message: "The same audio was imported before.")
             return nil
         }
         let (recordingDate, certain) = AudioInspector.recordingDate(for: metadataURL)
@@ -73,6 +108,7 @@ final class ImportStore: ObservableObject {
             recordingDateIsCertain: certain,
             durationSeconds: duration,
             workflow: workflowForSource(sourceURL),
+            workflowIsUserAssigned: true,
             status: importError == nil ? .queued : .needsAttention
         )
         if let managedAudioURL {
@@ -86,6 +122,19 @@ final class ImportStore: ObservableObject {
         item.error = importError
         items.insert(item, at: 0)
         return item
+    }
+
+    private func noteSkippedImport(_ url: URL, kind: ImportNotice.Kind, message: String) {
+        importNotices.removeAll { $0.url == url }
+        importNotices.append(ImportNotice(kind: kind, filename: url.lastPathComponent, url: url, message: message))
+    }
+
+    func dismissImportNotice(_ id: ImportNotice.ID) {
+        importNotices.removeAll { $0.id == id }
+    }
+
+    func clearImportNotices() {
+        importNotices.removeAll()
     }
 
     func update(_ item: ImportItem) {
@@ -291,8 +340,8 @@ final class ImportStore: ObservableObject {
         for item in clearedItems {
             processingTasks[item.id]?.cancel()
             processingTasks[item.id] = nil
-            if let managedAudioPath = item.managedAudioPath {
-                try? FileManager.default.removeItem(at: URL(fileURLWithPath: managedAudioPath))
+            for path in [item.managedAudioPath, item.normalizedAudioPath].compactMap({ $0 }) {
+                try? FileManager.default.removeItem(at: URL(fileURLWithPath: path))
             }
         }
         items.removeAll(where: shouldClear)
@@ -319,15 +368,24 @@ final class ImportStore: ObservableObject {
         }
     }
 
-    func appStorageUsage() -> Int64 {
-        directorySize(AppPaths.processingCacheDirectory)
-            + directorySize(AppPaths.managedAudioDirectory)
-            + directorySize(AppPaths.dropImportDirectory)
+    /// Walks three directories, so it never runs on the main actor. Doing that from a
+    /// view body froze the window whenever an item changed while Settings was open.
+    nonisolated static func storageUsage() async -> Int64 {
+        await Task.detached(priority: .utility) {
+            directorySize(AppPaths.processingCacheDirectory)
+                + directorySize(AppPaths.managedAudioDirectory)
+                + directorySize(AppPaths.dropImportDirectory)
+        }.value
     }
 
     func clearCache() {
         removeContents(of: AppPaths.processingCacheDirectory)
         removeContents(of: AppPaths.dropImportDirectory)
+        // The processing cache is where normalized copies live, so no item may keep
+        // pointing at one afterwards.
+        for index in items.indices where items[index].normalizedAudioPath != nil {
+            items[index].normalizedAudioPath = nil
+        }
         for item in items where item.status == .imported {
             guard let path = item.managedAudioPath else { continue }
             try? FileManager.default.removeItem(at: URL(fileURLWithPath: path))
@@ -396,7 +454,7 @@ final class ImportStore: ObservableObject {
         }
     }
 
-    private func backfillAudioFingerprints() {
+    private func backfillMissingSourceFields() {
         var didChange = false
         for index in items.indices {
             if items[index].sourceFilename == nil {
@@ -407,15 +465,35 @@ final class ImportStore: ObservableObject {
                 items[index].sourcePath = items[index].originalPath
                 didChange = true
             }
-            if items[index].audioFingerprint == nil,
-               let url = existingAudioURL(for: items[index]),
-               let fingerprint = try? AudioFingerprint.sha256(for: url) {
-                items[index].audioFingerprint = fingerprint
-                didChange = true
-            }
             if items[index].status == .imported {
                 rememberImportedFingerprint(for: items[index])
             }
+        }
+        if didChange {
+            saveItems()
+        }
+    }
+
+    private func backfillAudioFingerprints() async {
+        let pending: [(id: ImportItem.ID, url: URL)] = items.compactMap { item in
+            guard item.audioFingerprint == nil, let url = existingAudioURL(for: item) else { return nil }
+            return (item.id, url)
+        }
+        guard !pending.isEmpty else { return }
+
+        let fingerprints = await Task.detached(priority: .utility) {
+            pending.compactMap { entry -> (ImportItem.ID, String)? in
+                guard let fingerprint = try? AudioFingerprint.sha256(for: entry.url) else { return nil }
+                return (entry.id, fingerprint)
+            }
+        }.value
+
+        var didChange = false
+        for (id, fingerprint) in fingerprints {
+            guard let index = items.firstIndex(where: { $0.id == id }), items[index].audioFingerprint == nil else { continue }
+            items[index].audioFingerprint = fingerprint
+            rememberImportedFingerprint(for: items[index])
+            didChange = true
         }
         if didChange {
             saveItems()
@@ -449,7 +527,7 @@ final class ImportStore: ObservableObject {
         return nil
     }
 
-    private func directorySize(_ url: URL) -> Int64 {
+    nonisolated private static func directorySize(_ url: URL) -> Int64 {
         guard let enumerator = FileManager.default.enumerator(
             at: url,
             includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],

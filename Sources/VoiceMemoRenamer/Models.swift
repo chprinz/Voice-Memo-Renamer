@@ -131,6 +131,36 @@ enum ReviewBehavior: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+enum SummaryStyle: String, Codable, CaseIterable, Identifiable {
+    case sentence
+    case bullets
+    case none
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .sentence: "One sentence"
+        case .bullets: "Bullet points"
+        case .none: "No summary"
+        }
+    }
+}
+
+enum RecordingDateSource: String, Codable {
+    case fileMetadata
+    case transcript
+    case manual
+
+    var label: String {
+        switch self {
+        case .fileMetadata: "From file metadata"
+        case .transcript: "Spoken in the recording"
+        case .manual: "Set by you"
+        }
+    }
+}
+
 enum ProcessingStoragePolicy: String, Codable, CaseIterable, Identifiable {
     case deleteAfterSuccessfulExport
     case keepForSevenDays
@@ -164,6 +194,9 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
     var reviewBehavior: ReviewBehavior
     var filenamePattern: String
     var processingStoragePolicy: ProcessingStoragePolicy
+    var usesSmartAnalysis: Bool
+    var summaryStyle: SummaryStyle
+    var noteIncludesTitle: Bool
 
     var usesWatchFolder: Bool {
         isEnabled && sourceBehavior.usesWatchFolder && !watchFolderPath.isEmpty
@@ -186,6 +219,9 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         case reviewBehavior
         case filenamePattern
         case processingStoragePolicy
+        case usesSmartAnalysis
+        case summaryStyle
+        case noteIncludesTitle
     }
 
     init(
@@ -202,7 +238,10 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         audioFileBehavior: AudioFileBehavior,
         reviewBehavior: ReviewBehavior,
         filenamePattern: String,
-        processingStoragePolicy: ProcessingStoragePolicy
+        processingStoragePolicy: ProcessingStoragePolicy,
+        usesSmartAnalysis: Bool = true,
+        summaryStyle: SummaryStyle = .sentence,
+        noteIncludesTitle: Bool = true
     ) {
         self.id = id
         self.name = name
@@ -218,6 +257,9 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         self.reviewBehavior = reviewBehavior
         self.filenamePattern = filenamePattern
         self.processingStoragePolicy = processingStoragePolicy
+        self.usesSmartAnalysis = usesSmartAnalysis
+        self.summaryStyle = summaryStyle
+        self.noteIncludesTitle = noteIncludesTitle
     }
 
     init(from decoder: Decoder) throws {
@@ -235,6 +277,9 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         reviewBehavior = try container.decodeIfPresent(ReviewBehavior.self, forKey: .reviewBehavior) ?? .requireReview
         filenamePattern = try container.decodeIfPresent(String.self, forKey: .filenamePattern) ?? WorkflowPolicy.defaultFilenamePattern
         processingStoragePolicy = try container.decodeIfPresent(ProcessingStoragePolicy.self, forKey: .processingStoragePolicy) ?? .deleteAfterSuccessfulExport
+        usesSmartAnalysis = try container.decodeIfPresent(Bool.self, forKey: .usesSmartAnalysis) ?? true
+        summaryStyle = try container.decodeIfPresent(SummaryStyle.self, forKey: .summaryStyle) ?? .sentence
+        noteIncludesTitle = try container.decodeIfPresent(Bool.self, forKey: .noteIncludesTitle) ?? true
 
         if let behavior = try container.decodeIfPresent(AudioFileBehavior.self, forKey: .audioFileBehavior) {
             audioFileBehavior = behavior
@@ -264,6 +309,9 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         try container.encode(reviewBehavior, forKey: .reviewBehavior)
         try container.encode(filenamePattern, forKey: .filenamePattern)
         try container.encode(processingStoragePolicy, forKey: .processingStoragePolicy)
+        try container.encode(usesSmartAnalysis, forKey: .usesSmartAnalysis)
+        try container.encode(summaryStyle, forKey: .summaryStyle)
+        try container.encode(noteIncludesTitle, forKey: .noteIncludesTitle)
     }
 
     private static func migratedAudioFileBehavior(
@@ -305,6 +353,28 @@ struct AnalysisMetadata: Codable, Equatable {
     var themes: [String]
     var mood: String?
     var suggestedWorkflow: String?
+    /// Short bullet points, used when a workflow renders its summary as a list.
+    var summaryPoints: [String]? = nil
+    /// Date and time the speaker states at the start or end of the recording, if any.
+    var spokenDate: Date? = nil
+}
+
+// Decoded leniently so history written by older versions keeps loading.
+extension AnalysisMetadata {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            title: try container.decodeIfPresent(String.self, forKey: .title) ?? "",
+            slug: try container.decodeIfPresent(String.self, forKey: .slug) ?? "",
+            shortSlug: try container.decodeIfPresent(String.self, forKey: .shortSlug) ?? "",
+            summary: try container.decodeIfPresent(String.self, forKey: .summary) ?? "",
+            themes: try container.decodeIfPresent([String].self, forKey: .themes) ?? [],
+            mood: try container.decodeIfPresent(String.self, forKey: .mood),
+            suggestedWorkflow: try container.decodeIfPresent(String.self, forKey: .suggestedWorkflow),
+            summaryPoints: try container.decodeIfPresent([String].self, forKey: .summaryPoints),
+            spokenDate: try container.decodeIfPresent(Date.self, forKey: .spokenDate)
+        )
+    }
 }
 
 struct ProcessingError: Codable, Equatable {
@@ -331,18 +401,26 @@ struct ImportItem: Codable, Identifiable, Equatable {
     var sourcePath: String?
     var audioFingerprint: String?
     var managedAudioPath: String?
+    /// Loudness-normalized copy in the processing cache. Created before transcription
+    /// and reused for the exported audio, so normalization only ever runs once.
+    var normalizedAudioPath: String?
     var recordingDate: Date
     var recordingDateIsCertain: Bool
+    var recordingDateSource: RecordingDateSource = .fileMetadata
     var durationSeconds: Double?
     var transcript: String?
     var analysis: AnalysisMetadata?
     var workflow: String = StandardWorkflowID.obsidianJournal
+    /// True once the workflow was picked deliberately (import picker, watch folder, or review).
+    /// Automatic routing never overwrites a deliberate choice.
+    var workflowIsUserAssigned: Bool = false
     var status: ImportStatus = .new
     var retryCount = 0
     var importedAt: Date?
     var exportedMarkdownPath: String?
     var error: ProcessingError?
     var fileOperations: [FileOperationRecord] = []
+
 
     var displayTitle: String {
         if let title = analysis?.title, !title.isEmpty {
@@ -367,6 +445,37 @@ struct ImportItem: Codable, Identifiable, Equatable {
     }
 }
 
+// Decoded leniently so history written by older versions keeps loading.
+extension ImportItem {
+    init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+            createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+            updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
+            originalFilename = try container.decodeIfPresent(String.self, forKey: .originalFilename) ?? ""
+            originalPath = try container.decodeIfPresent(String.self, forKey: .originalPath) ?? ""
+            sourceFilename = try container.decodeIfPresent(String.self, forKey: .sourceFilename)
+            sourcePath = try container.decodeIfPresent(String.self, forKey: .sourcePath)
+            audioFingerprint = try container.decodeIfPresent(String.self, forKey: .audioFingerprint)
+            managedAudioPath = try container.decodeIfPresent(String.self, forKey: .managedAudioPath)
+        normalizedAudioPath = try container.decodeIfPresent(String.self, forKey: .normalizedAudioPath)
+            recordingDate = try container.decodeIfPresent(Date.self, forKey: .recordingDate) ?? createdAt
+            recordingDateIsCertain = try container.decodeIfPresent(Bool.self, forKey: .recordingDateIsCertain) ?? false
+            recordingDateSource = try container.decodeIfPresent(RecordingDateSource.self, forKey: .recordingDateSource) ?? .fileMetadata
+            durationSeconds = try container.decodeIfPresent(Double.self, forKey: .durationSeconds)
+            transcript = try container.decodeIfPresent(String.self, forKey: .transcript)
+            analysis = try container.decodeIfPresent(AnalysisMetadata.self, forKey: .analysis)
+            workflow = try container.decodeIfPresent(String.self, forKey: .workflow) ?? StandardWorkflowID.obsidianJournal
+            workflowIsUserAssigned = try container.decodeIfPresent(Bool.self, forKey: .workflowIsUserAssigned) ?? false
+            status = try container.decodeIfPresent(ImportStatus.self, forKey: .status) ?? .new
+            retryCount = try container.decodeIfPresent(Int.self, forKey: .retryCount) ?? 0
+            importedAt = try container.decodeIfPresent(Date.self, forKey: .importedAt)
+            exportedMarkdownPath = try container.decodeIfPresent(String.self, forKey: .exportedMarkdownPath)
+            error = try container.decodeIfPresent(ProcessingError.self, forKey: .error)
+            fileOperations = try container.decodeIfPresent([FileOperationRecord].self, forKey: .fileOperations) ?? []
+        }
+}
+
 struct AppSettings: Codable, Equatable {
     var macWhisperPath = "/usr/local/bin/mw"
     var ffmpegPath = "/opt/homebrew/bin/ffmpeg"
@@ -387,7 +496,10 @@ struct AppSettings: Codable, Equatable {
     var archiveRelativePath = "📦 Archive/Voice Memos"
     var importedAudioFingerprints: [String] = []
     var compressAudioOnExport = false
-    var normalizeAudioOnExport = false
+    var normalizeAudio = false
+    var compressionBitrateKbps = 96
+    var compressionForceMono = true
+    var useSpokenDateFromTranscript = true
 
     enum CodingKeys: String, CodingKey {
         case macWhisperPath
@@ -409,7 +521,10 @@ struct AppSettings: Codable, Equatable {
         case archiveRelativePath
         case importedAudioFingerprints
         case compressAudioOnExport
-        case normalizeAudioOnExport
+        case normalizeAudio = "normalizeAudioOnExport"
+        case compressionBitrateKbps
+        case compressionForceMono
+        case useSpokenDateFromTranscript
     }
 
     init() {}
@@ -443,7 +558,10 @@ struct AppSettings: Codable, Equatable {
         archiveRelativePath = try container.decodeIfPresent(String.self, forKey: .archiveRelativePath) ?? archiveRelativePath
         importedAudioFingerprints = try container.decodeIfPresent([String].self, forKey: .importedAudioFingerprints) ?? []
         compressAudioOnExport = try container.decodeIfPresent(Bool.self, forKey: .compressAudioOnExport) ?? false
-        normalizeAudioOnExport = try container.decodeIfPresent(Bool.self, forKey: .normalizeAudioOnExport) ?? false
+        normalizeAudio = try container.decodeIfPresent(Bool.self, forKey: .normalizeAudio) ?? false
+        compressionBitrateKbps = try container.decodeIfPresent(Int.self, forKey: .compressionBitrateKbps) ?? compressionBitrateKbps
+        compressionForceMono = try container.decodeIfPresent(Bool.self, forKey: .compressionForceMono) ?? compressionForceMono
+        useSpokenDateFromTranscript = try container.decodeIfPresent(Bool.self, forKey: .useSpokenDateFromTranscript) ?? useSpokenDateFromTranscript
         WorkflowPolicy.defaults.forEach { fallback in
             if !workflows.contains(where: { $0.id == fallback.id }) {
                 workflows.append(fallback)

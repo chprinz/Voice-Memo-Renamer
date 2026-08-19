@@ -78,9 +78,11 @@ struct ContentView: View {
             if store.items.isEmpty {
                 Spacer(minLength: 28)
                 importDropZone
+                importNotices
                 Spacer(minLength: 80)
             } else {
                 importDropZone
+                importNotices
                 listToolbar
                 Divider()
                 queue
@@ -184,10 +186,10 @@ struct ContentView: View {
                 }
 
                 HStack(spacing: 16) {
-                    Toggle("Normalize (-16 LUFS)", isOn: $store.settings.normalizeAudioOnExport)
-                        .help("Two-pass EBU R128 loudness normalization (ffmpeg loudnorm) on the exported audio copy. Requires ffmpeg, path set in Settings → Services.")
-                    Toggle("Compress (96 kbps mono)", isOn: $store.settings.compressAudioOnExport)
-                        .help("Re-encodes the exported audio copy to mono AAC/M4A at 96 kbps. Already-compact M4A sources are left untouched.")
+                    Toggle("Normalize (-16 LUFS)", isOn: $store.settings.normalizeAudio)
+                        .help("Two-pass EBU R128 loudness normalization (ffmpeg loudnorm), applied before transcription so quiet recordings are easier for MacWhisper to read. The same normalized audio is what gets exported. Requires ffmpeg, path set in Settings → Services.")
+                    Toggle(compressToggleLabel, isOn: $store.settings.compressAudioOnExport)
+                        .help("Re-encodes the exported audio copy to AAC/M4A. Change bitrate and channels in Settings → Exported Audio. Already-compact M4A sources are left untouched.")
                 }
                 .toggleStyle(.checkbox)
                 .font(.caption)
@@ -205,6 +207,47 @@ struct ContentView: View {
         }
         .padding(.horizontal, 20)
         .padding(.bottom, 14)
+    }
+
+    @ViewBuilder
+    private var importNotices: some View {
+        if !store.importNotices.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(store.importNotices) { notice in
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        Image(systemName: notice.kind == .duplicate ? "doc.on.doc" : "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Not imported: \(notice.filename)")
+                                .font(.caption.weight(.medium))
+                            Text(notice.message)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if notice.kind == .duplicate {
+                            Button("Import Anyway") {
+                                importAudioFile(notice.url, allowDuplicate: true)
+                                store.dismissImportNotice(notice.id)
+                            }
+                            .controlSize(.small)
+                        }
+                        Button {
+                            store.dismissImportNotice(notice.id)
+                        } label: {
+                            Image(systemName: "xmark")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Dismiss")
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 12)
+        }
     }
 
     private var listToolbar: some View {
@@ -331,6 +374,11 @@ struct ContentView: View {
         } set: { item in
             inspectedItemID = item?.id
         }
+    }
+
+    private var compressToggleLabel: String {
+        let channels = store.settings.compressionForceMono ? "mono" : "stereo"
+        return "Compress (\(store.settings.compressionBitrateKbps) kbps \(channels))"
     }
 
     private var defaultWorkflowBinding: Binding<String> {
@@ -548,7 +596,7 @@ struct ContentView: View {
         case .new:
             ImportProcessor(store: store).process(item.id)
         case .readyForReview:
-            ImportProcessor(store: store).export(item.id)
+            Task { await ImportProcessor(store: store).export(item.id) }
         case .failed, .needsAttention:
             ImportProcessor(store: store).process(item.id)
         case .imported:
@@ -561,6 +609,7 @@ struct ContentView: View {
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
         mode = .current
         currentStatusFilter = .all
+        store.clearImportNotices()
         providers.forEach(importDroppedProvider)
         return true
     }
@@ -596,9 +645,9 @@ struct ContentView: View {
         }
     }
 
-    private func importAudioFile(_ url: URL) {
+    private func importAudioFile(_ url: URL, allowDuplicate: Bool = false) {
         Task { @MainActor in
-            if let imported = await store.addItem(from: url) {
+            if let imported = await store.addItem(from: url, allowDuplicate: allowDuplicate) {
                 mode = .current
                 currentStatusFilter = .all
                 ImportProcessor(store: store).process(imported.id)
@@ -629,12 +678,13 @@ struct ContentView: View {
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
-        panel.allowedContentTypes = [.audio, .mpeg4Audio, .mp3, .wav, .aiff]
+        panel.allowedContentTypes = [.audio, .mpeg4Audio, .mp3, .wav, .aiff, .movie]
 
         if panel.runModal() == .OK {
             Task { @MainActor in
                 mode = .current
                 currentStatusFilter = .all
+                store.clearImportNotices()
                 for url in panel.urls {
                     if let imported = await store.addItem(from: url) {
                         ImportProcessor(store: store).process(imported.id)

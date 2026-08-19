@@ -123,7 +123,10 @@ enum FileNaming {
 }
 
 enum AudioFileAccess {
-    static let supportedAudioExtensions = Set(["m4a", "mp3", "wav", "aiff", "aif", "caf", "mp4", "mov"])
+    static let supportedAudioExtensions = Set([
+        "m4a", "m4b", "mp3", "wav", "wave", "w64", "aiff", "aif", "aifc",
+        "caf", "flac", "aac", "opus", "ogg", "mp4", "mov"
+    ])
 
     static func isSupportedAudioURL(_ url: URL) -> Bool {
         supportedAudioExtensions.contains(url.pathExtension.lowercased())
@@ -271,6 +274,35 @@ enum AudioInspector {
         }
     }
 
+    /// True for float or >24 bit linear PCM, as written by wireless field recorders.
+    /// Support for these is patchy across tools, so they get converted to plain 16 bit
+    /// PCM before transcription rather than being handed over as they are.
+    static func needsTranscodingForTranscription(_ url: URL) -> Bool {
+        withAudioFile(at: url) { file -> Bool? in
+            var asbd = AudioStreamBasicDescription()
+            var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+            guard AudioFileGetProperty(file, kAudioFilePropertyDataFormat, &size, &asbd) == noErr else {
+                return nil
+            }
+            guard asbd.mFormatID == kAudioFormatLinearPCM else { return false }
+            let isFloat = asbd.mFormatFlags & kAudioFormatFlagIsFloat != 0
+            return isFloat || asbd.mBitsPerChannel > 24
+        } ?? false
+    }
+
+    static func formatSummary(for url: URL) -> String? {
+        withAudioFile(at: url) { file -> String? in
+            var asbd = AudioStreamBasicDescription()
+            var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+            guard AudioFileGetProperty(file, kAudioFilePropertyDataFormat, &size, &asbd) == noErr else {
+                return nil
+            }
+            let isFloat = asbd.mFormatFlags & kAudioFormatFlagIsFloat != 0
+            let depth = asbd.mBitsPerChannel == 0 ? "compressed" : "\(asbd.mBitsPerChannel) bit\(isFloat ? " float" : "")"
+            return "\(Int(asbd.mSampleRate)) Hz, \(asbd.mChannelsPerFrame) ch, \(depth)"
+        }
+    }
+
     private static func withAudioFile<T>(at url: URL, _ body: (AudioFileID) -> T?) -> T? {
         var audioFile: AudioFileID?
         let status = AudioFileOpenURL(url as CFURL, .readPermission, 0, &audioFile)
@@ -282,30 +314,34 @@ enum AudioInspector {
 
 enum AudioCompressor {
     static let toolPath = "/usr/bin/afconvert"
-    static let targetBitrate = 96_000
+    static let bitrateChoicesKbps = [32, 48, 64, 96, 128, 192, 256]
     static let fallbackSampleRate = 44_100
-    private static let skipBitrateThreshold = 200_000
     private static let skipEligibleExtensions: Set<String> = ["m4a"]
 
-    static func shouldCompress(_ url: URL) -> Bool {
+    /// An already-compact M4A is left alone unless it is clearly bigger than the target.
+    static func shouldCompress(_ url: URL, targetBitrateKbps: Int) -> Bool {
         guard skipEligibleExtensions.contains(url.pathExtension.lowercased()) else { return true }
         guard let bitRate = AudioInspector.bitRate(for: url) else { return true }
-        return bitRate >= skipBitrateThreshold
+        return bitRate >= UInt32(targetBitrateKbps * 1_000 * 2)
     }
 
-    static func compress(source: URL, to destination: URL) throws {
+    static func compress(source: URL, to destination: URL, bitrateKbps: Int, forceMono: Bool) throws {
         let sampleRate = Int(AudioInspector.sampleRate(for: source) ?? Double(fallbackSampleRate))
         let process = Process()
         process.executableURL = URL(fileURLWithPath: toolPath)
-        process.arguments = [
+        var arguments = [
             "-f", "m4af",
-            "-d", "aac@\(sampleRate)",
-            "-c", "1",
-            "--mix",
-            "-b", "\(targetBitrate)",
+            "-d", "aac@\(sampleRate)"
+        ]
+        if forceMono {
+            arguments += ["-c", "1", "--mix"]
+        }
+        arguments += [
+            "-b", "\(max(16, bitrateKbps) * 1_000)",
             source.path,
             destination.path
         ]
+        process.arguments = arguments
         let stderr = Pipe()
         process.standardError = stderr
         process.standardOutput = Pipe()
@@ -333,8 +369,235 @@ enum AudioCompressor {
     }
 }
 
+/// Rewrites audio MacWhisper cannot read into plain 16 bit PCM WAV.
+/// Only used for transcription, never for the audio that gets exported.
+enum AudioTranscoder {
+    static func transcodeForTranscription(source: URL, ffmpegPath: String) throws -> URL {
+        try FileManager.default.createDirectory(at: AppPaths.processingCacheDirectory, withIntermediateDirectories: true)
+        let destination = FileNaming.uniqueURL(
+            in: AppPaths.processingCacheDirectory,
+            filename: source.deletingPathExtension().lastPathComponent + "-transcode.wav"
+        )
+
+        let sampleRate = Int(AudioInspector.sampleRate(for: source) ?? 48_000)
+        do {
+            try run(
+                tool: AudioCompressor.toolPath,
+                arguments: ["-f", "WAVE", "-d", "LEI16@\(sampleRate)", "-c", "1", "--mix", source.path, destination.path],
+                toolName: "afconvert"
+            )
+            return destination
+        } catch let afconvertFailure as ProcessingFailure {
+            try? FileManager.default.removeItem(at: destination)
+            guard FileManager.default.isExecutableFile(atPath: ffmpegPath) else { throw afconvertFailure }
+            do {
+                try run(
+                    tool: ffmpegPath,
+                    arguments: ["-y", "-hide_banner", "-loglevel", "error", "-i", source.path,
+                                "-ac", "1", "-ar", String(sampleRate), "-c:a", "pcm_s16le", destination.path],
+                    toolName: "ffmpeg"
+                )
+                return destination
+            } catch {
+                try? FileManager.default.removeItem(at: destination)
+                throw ProcessingFailure(
+                    message: "Could not convert this audio file.",
+                    details: "Neither afconvert nor ffmpeg could read it.\n\nafconvert: \(afconvertFailure.details)\nffmpeg: \((error as? ProcessingFailure)?.details ?? error.localizedDescription)"
+                )
+            }
+        }
+    }
+
+    private static func run(tool: String, arguments: [String], toolName: String) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: tool)
+        process.arguments = arguments
+        let stderr = Pipe()
+        process.standardError = stderr
+        process.standardOutput = Pipe()
+        do {
+            try process.run()
+        } catch {
+            throw ProcessingFailure(message: "Could not start \(toolName).", details: "\(tool)\n\(error.localizedDescription)")
+        }
+        let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            let output = String(data: errorData, encoding: .utf8) ?? ""
+            throw ProcessingFailure(
+                message: "\(toolName) could not convert the audio.",
+                details: output.isEmpty ? "\(toolName) exited with status \(process.terminationStatus)." : output
+            )
+        }
+    }
+}
+
+/// Finds a date or time the speaker states at the very start or end of a recording,
+/// which is often more reliable than the file's own timestamps.
+enum TranscriptDateExtractor {
+    private static let edgeCharacterCount = 500
+
+    /// Parses what the analysis model returned for the spoken date.
+    static func parseModelValue(_ raw: String?, referenceDate: Date) -> Date? {
+        guard let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+        let formats = [
+            "yyyy-MM-dd'T'HH:mm:ssZ", "yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd'T'HH:mm",
+            "yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mm", "yyyy-MM-dd",
+            "dd.MM.yyyy HH:mm", "dd.MM.yyyy"
+        ]
+        for format in formats {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = format
+            if let date = formatter.date(from: value) {
+                return isPlausible(date, referenceDate: referenceDate) ? date : nil
+            }
+        }
+        return nil
+    }
+
+    /// Fallback for transcripts analysed without the model, e.g. when smart analysis is off.
+    /// Deliberately strict: only an explicitly written out date counts. A loose date
+    /// detector matches things like "half past three" and silently invents a wrong day.
+    static func detect(in transcript: String, referenceDate: Date) -> Date? {
+        let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let edges = [String(trimmed.prefix(edgeCharacterCount)), String(trimmed.suffix(edgeCharacterCount))]
+        for edge in edges {
+            guard let date = firstDate(in: edge, referenceDate: referenceDate) else { continue }
+            return date
+        }
+        return nil
+    }
+
+    private static func firstDate(in text: String, referenceDate: Date) -> Date? {
+        for pattern in datePatterns {
+            guard let match = pattern.regex.firstMatch(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text)) else {
+                continue
+            }
+            guard var components = pattern.components(match, text) else { continue }
+            let clock = time(in: text, near: match.range)
+            components.hour = clock?.hour ?? 0
+            components.minute = clock?.minute ?? 0
+            guard let date = Calendar.current.date(from: components),
+                  isPlausible(date, referenceDate: referenceDate) else { continue }
+            return date
+        }
+        return nil
+    }
+
+    private struct DatePattern {
+        var regex: NSRegularExpression
+        var components: (NSTextCheckingResult, String) -> DateComponents?
+    }
+
+    private static let monthNames: [String: Int] = [
+        "januar": 1, "january": 1, "jänner": 1, "februar": 2, "february": 2, "märz": 3, "maerz": 3,
+        "march": 3, "april": 4, "mai": 5, "may": 5, "juni": 6, "june": 6, "juli": 7, "july": 7,
+        "august": 8, "september": 9, "oktober": 10, "october": 10, "november": 11,
+        "dezember": 12, "december": 12
+    ]
+
+    private static let datePatterns: [DatePattern] = {
+        let monthAlternation = monthNames.keys.sorted { $0.count > $1.count }.joined(separator: "|")
+        func regex(_ pattern: String) -> NSRegularExpression {
+            try! NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+        }
+        func number(_ match: NSTextCheckingResult, _ text: String, _ index: Int) -> Int? {
+            guard let range = Range(match.range(at: index), in: text) else { return nil }
+            return Int(text[range])
+        }
+        func month(_ match: NSTextCheckingResult, _ text: String, _ index: Int) -> Int? {
+            guard let range = Range(match.range(at: index), in: text) else { return nil }
+            return monthNames[text[range].lowercased()]
+        }
+        return [
+            // 2026-08-14
+            DatePattern(regex: regex(#"\b(\d{4})-(\d{1,2})-(\d{1,2})\b"#)) { match, text in
+                guard let year = number(match, text, 1), let month = number(match, text, 2), let day = number(match, text, 3) else { return nil }
+                return DateComponents(year: year, month: month, day: day)
+            },
+            // 14.08.2026 and 14. 8. 2026
+            DatePattern(regex: regex(#"\b(\d{1,2})\.\s?(\d{1,2})\.\s?(\d{4})\b"#)) { match, text in
+                guard let day = number(match, text, 1), let month = number(match, text, 2), let year = number(match, text, 3) else { return nil }
+                return DateComponents(year: year, month: month, day: day)
+            },
+            // 14. August 2026
+            DatePattern(regex: regex(#"\b(\d{1,2})\.?\s*(\#(monthAlternation))\s+(\d{4})\b"#)) { match, text in
+                guard let day = number(match, text, 1), let month = month(match, text, 2), let year = number(match, text, 3) else { return nil }
+                return DateComponents(year: year, month: month, day: day)
+            },
+            // August 14, 2026
+            DatePattern(regex: regex(#"\b(\#(monthAlternation))\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\b"#)) { match, text in
+                guard let month = month(match, text, 1), let day = number(match, text, 2), let year = number(match, text, 3) else { return nil }
+                return DateComponents(year: year, month: month, day: day)
+            }
+        ]
+    }()
+
+    /// Only accepts a clock time written next to the date, and never inside it, so
+    /// neither "14.08.2026" nor unrelated numbers elsewhere can set the recording time.
+    private static func time(in text: String, near dateRange: NSRange) -> (hour: Int, minute: Int)? {
+        let nsText = text as NSString
+        let afterStart = dateRange.location + dateRange.length
+        let after = nsText.substring(with: NSRange(
+            location: afterStart,
+            length: min(40, nsText.length - afterStart)
+        ))
+        let beforeStart = max(0, dateRange.location - 40)
+        let before = nsText.substring(with: NSRange(location: beforeStart, length: dateRange.location - beforeStart))
+
+        for window in [after, before] {
+            if let clock = firstTime(in: window) {
+                return clock
+            }
+        }
+        return nil
+    }
+
+    private static let timeRegex = try! NSRegularExpression(
+        pattern: #"(?:\b(\d{1,2}):(\d{2})\b)|(?:\b(\d{1,2})\.(\d{2})\s*uhr\b)"#,
+        options: [.caseInsensitive]
+    )
+
+    private static func firstTime(in window: String) -> (hour: Int, minute: Int)? {
+        guard let match = timeRegex.firstMatch(in: window, range: NSRange(window.startIndex..<window.endIndex, in: window)) else {
+            return nil
+        }
+        for (hourIndex, minuteIndex) in [(1, 2), (3, 4)] {
+            guard let hourRange = Range(match.range(at: hourIndex), in: window),
+                  let minuteRange = Range(match.range(at: minuteIndex), in: window),
+                  let hour = Int(window[hourRange]), let minute = Int(window[minuteRange]),
+                  (0...23).contains(hour), (0...59).contains(minute) else { continue }
+            return (hour, minute)
+        }
+        return nil
+    }
+
+    /// Guards against the model inventing a date, and against "half past three" style
+    /// matches that resolve to today rather than to the day of the recording.
+    private static func isPlausible(_ date: Date, referenceDate: Date) -> Bool {
+        guard let earliest = Calendar.current.date(byAdding: .year, value: -30, to: referenceDate),
+              let latest = Calendar.current.date(byAdding: .day, value: 1, to: referenceDate) else {
+            return false
+        }
+        return date >= earliest && date <= latest
+    }
+}
+
 enum AudioNormalizer {
     private static let filterBase = "loudnorm=I=-16:TP=-1.5:LRA=11"
+
+    /// Writes a normalized copy into the processing cache and returns it.
+    static func normalizedCopy(of source: URL, ffmpegPath: String) throws -> URL {
+        try FileManager.default.createDirectory(at: AppPaths.processingCacheDirectory, withIntermediateDirectories: true)
+        let destination = FileNaming.uniqueURL(
+            in: AppPaths.processingCacheDirectory,
+            filename: source.deletingPathExtension().lastPathComponent + "-normalized.wav"
+        )
+        try normalize(source: source, to: destination, ffmpegPath: ffmpegPath)
+        return destination
+    }
 
     static func normalize(source: URL, to destination: URL, ffmpegPath: String) throws {
         let sampleRate = AudioInspector.sampleRate(for: source)
@@ -424,7 +687,7 @@ enum AudioNormalizer {
         } catch {
             throw ProcessingFailure(
                 message: "Could not start ffmpeg.",
-                details: "\(ffmpegPath)\n\(error.localizedDescription)"
+                details: "\(ffmpegPath)\n\(error.localizedDescription)\n\nLoudness normalization needs ffmpeg. Set its path under Settings → Services, or turn off Normalize to import without it."
             )
         }
         let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
@@ -471,17 +734,46 @@ enum Finder {
 }
 
 enum FilenamePattern {
-    static let placeholders = [
-        "{date}", "{time}", "{yyyy}", "{yy}", "{MM}", "{dd}", "{HH}", "{mm}",
-        "{title}", "{slug}", "{shortSlug}", "{source}", "{workflow}",
-        "{location}", "{project}", "{initials}", "{originalName}", "{extension}"
+    struct Placeholder {
+        var token: String
+        var explanation: String
+    }
+
+    static let documentedPlaceholders: [Placeholder] = [
+        Placeholder(token: "{filename}", explanation: "Original filename, unchanged (spaces and capitals kept)"),
+        Placeholder(token: "{filenameSlug}", explanation: "Original filename as a lowercase slug"),
+        Placeholder(token: "{date}", explanation: "Recording date, 2026-05-12"),
+        Placeholder(token: "{time}", explanation: "Recording time, 18-45"),
+        Placeholder(token: "{yyyy}", explanation: "Year"),
+        Placeholder(token: "{yy}", explanation: "Year, two digits"),
+        Placeholder(token: "{MM}", explanation: "Month"),
+        Placeholder(token: "{dd}", explanation: "Day"),
+        Placeholder(token: "{HH}", explanation: "Hour"),
+        Placeholder(token: "{mm}", explanation: "Minute"),
+        Placeholder(token: "{title}", explanation: "Analysed title as a slug"),
+        Placeholder(token: "{slug}", explanation: "Analysed long slug"),
+        Placeholder(token: "{shortSlug}", explanation: "Analysed short slug"),
+        Placeholder(token: "{source}", explanation: "Where the file came from, jpr or manual"),
+        Placeholder(token: "{workflow}", explanation: "Workflow name as a slug"),
+        Placeholder(token: "{originalName}", explanation: "Same as {filenameSlug}"),
+        Placeholder(token: "{extension}", explanation: "File extension")
     ]
+
+    static var placeholders: [String] { documentedPlaceholders.map(\.token) }
+
+    /// Placeholders that only have a value once LM Studio has analysed the transcript.
+    private static let analysisPlaceholders = ["{title}", "{slug}", "{shortSlug}"]
+
+    static func requiresAnalysis(pattern: String) -> Bool {
+        analysisPlaceholders.contains { pattern.contains($0) }
+    }
 
     static func render(pattern: String, item: ImportItem, workflowName: String, includeExtension: Bool = true) -> String {
         let calendar = Calendar.current
         let date = item.recordingDate
         let extensionValue = URL(fileURLWithPath: item.originalFilename).pathExtension.isEmpty ? "m4a" : URL(fileURLWithPath: item.originalFilename).pathExtension
-        let originalBase = (item.originalFilename as NSString).deletingPathExtension
+        let originalSourceName = item.sourceFilename ?? item.originalFilename
+        let originalBase = (originalSourceName as NSString).deletingPathExtension
         let title = item.analysis?.title ?? originalBase
         let slug = item.analysis?.slug ?? title.slugSafe
         let shortSlug = item.analysis?.shortSlug ?? slug.split(separator: "-").prefix(4).joined(separator: "-")
@@ -502,6 +794,8 @@ enum FilenamePattern {
             "{location}": "location",
             "{project}": "project",
             "{initials}": "cp",
+            "{filename}": originalBase.filesystemSafeFilename,
+            "{filenameSlug}": originalBase.slugSafe,
             "{originalName}": originalBase.slugSafe,
             "{extension}": extensionValue
         ]
@@ -518,8 +812,10 @@ enum FilenamePattern {
 
     static func preview(pattern: String, workflowName: String) -> String {
         var sample = ImportItem(
-            originalFilename: "2026-05-12_18-45.m4a",
-            originalPath: "/Example/2026-05-12_18-45.m4a",
+            originalFilename: "Original Filename.m4a",
+            originalPath: "/Example/Original Filename.m4a",
+            sourceFilename: "Original Filename.m4a",
+            sourcePath: "/Example/Original Filename.m4a",
             managedAudioPath: nil,
             recordingDate: Date(timeIntervalSince1970: 1_747_069_500),
             recordingDateIsCertain: true
