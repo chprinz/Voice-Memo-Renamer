@@ -108,7 +108,7 @@ import does not hide the rest.
 
 Audio dragged from an app that hands over data rather than a file is copied into the
 app's own folder first. Settings → Services → Cache shows how much that folder holds,
-and **Keep** decides when copies go: by default once the recording is imported, which
+and **Delete** decides when copies go: by default once the recording is imported, which
 is also when a copy stops being needed. A copy is only ever deleted if the audio
 verifiably exists somewhere else, so a workflow that leaves audio in place keeps its
 copy.
