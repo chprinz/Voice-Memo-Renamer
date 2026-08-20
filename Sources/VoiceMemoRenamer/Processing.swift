@@ -818,6 +818,11 @@ struct ObsidianJournalExporter {
 
             var processedAudioURL = sourceAudioURL
             var normalizedTempURL: URL?
+            defer {
+                if let normalizedTempURL {
+                    try? FileManager.default.removeItem(at: normalizedTempURL)
+                }
+            }
             if willNormalize {
                 if let existing = item.normalizedAudioPath, FileManager.default.fileExists(atPath: existing) {
                     // Normalized before transcription; reuse it instead of running loudnorm twice.
@@ -854,10 +859,6 @@ struct ObsidianJournalExporter {
                 try FileManager.default.moveItem(at: sourceAudioURL, to: destinationAudioURL)
             } else {
                 try FileManager.default.copyItem(at: sourceAudioURL, to: destinationAudioURL)
-            }
-
-            if let normalizedTempURL {
-                try? FileManager.default.removeItem(at: normalizedTempURL)
             }
 
             if isMove {
@@ -1066,7 +1067,7 @@ final class ImportProcessor {
         let task = Task {
             defer { store.finishProcessingTask(for: id) }
             guard var item = store.item(id: id) else { return }
-            guard item.status == .needsAttention || item.status == .failed || item.retryCount < store.settings.retryLimit else {
+            guard item.retryCount < store.settings.retryLimit else {
                 item.status = .needsAttention
                 item.error = ProcessingError(
                     message: "Retry limit reached.",
@@ -1496,11 +1497,17 @@ private struct ChatCompletionResponse: Decodable {
     struct Choice: Decodable {
         struct Message: Decodable {
             var content: String
-            var reasoningContent: String?
+            private var legacyReasoningContent: String?
+            private var reasoning: String?
+
+            var reasoningContent: String? { reasoning ?? legacyReasoningContent }
 
             enum CodingKeys: String, CodingKey {
                 case content
-                case reasoningContent = "reasoning_content"
+                // Renamed from "reasoning_content" to "reasoning" in LM Studio 0.3.23;
+                // both are accepted since either server version may be running.
+                case legacyReasoningContent = "reasoning_content"
+                case reasoning
             }
         }
 

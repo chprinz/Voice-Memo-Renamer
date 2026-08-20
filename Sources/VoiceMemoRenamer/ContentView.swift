@@ -506,9 +506,19 @@ struct ContentView: View {
         }
     }
 
+    /// Statuses that mean "actively working on it" stay visible under every filter tab,
+    /// so a recording never vanishes from the list mid-transcription only to reappear
+    /// (or not) once it lands on a terminal status.
+    private static let inFlightStatuses: Set<ImportStatus> = [
+        .new, .queued, .transcribing, .transcribed, .analyzing, .importing,
+    ]
+
     private var visibleItems: [ImportItem] {
         modeItems.filter { item in
-            let matchesFilter = mode == .history || filter == .all || filter.statuses.contains(item.status)
+            let matchesFilter = mode == .history
+                || filter == .all
+                || Self.inFlightStatuses.contains(item.status)
+                || filter.statuses.contains(item.status)
             return matchesFilter && matchesSearch(item)
         }
     }

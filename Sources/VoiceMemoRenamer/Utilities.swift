@@ -344,7 +344,7 @@ enum AudioCompressor {
         process.arguments = arguments
         let stderr = Pipe()
         process.standardError = stderr
-        process.standardOutput = Pipe()
+        process.standardOutput = FileHandle.nullDevice
 
         do {
             try process.run()
@@ -354,11 +354,12 @@ enum AudioCompressor {
                 details: "\(toolPath)\n\(error.localizedDescription)"
             )
         }
+        let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
 
         guard process.terminationStatus == 0 else {
             try? FileManager.default.removeItem(at: destination)
-            let details = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            let details = String(data: errorData, encoding: .utf8) ?? ""
             throw ProcessingFailure(
                 message: "Audio compression failed.",
                 details: details.isEmpty
@@ -414,7 +415,7 @@ enum AudioTranscoder {
         process.arguments = arguments
         let stderr = Pipe()
         process.standardError = stderr
-        process.standardOutput = Pipe()
+        process.standardOutput = FileHandle.nullDevice
         do {
             try process.run()
         } catch {
@@ -680,7 +681,7 @@ enum AudioNormalizer {
         process.arguments = arguments
         let stderr = Pipe()
         process.standardError = stderr
-        process.standardOutput = Pipe()
+        process.standardOutput = FileHandle.nullDevice
 
         do {
             try process.run()
