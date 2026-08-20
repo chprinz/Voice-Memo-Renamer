@@ -308,6 +308,7 @@ struct ContentView: View {
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
+                .onDeleteCommand { removeSelectedItem() }
             }
 
             Divider()
@@ -656,6 +657,11 @@ struct ContentView: View {
         if selectedItemID == item.id {
             selectedItemID = nil
         }
+    }
+
+    private func removeSelectedItem() {
+        guard let selectedItemID, let item = store.item(id: selectedItemID) else { return }
+        removeItem(item)
     }
 
     private func clearCount(for mode: QueueViewMode) -> Int {
