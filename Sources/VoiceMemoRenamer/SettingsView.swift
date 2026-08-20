@@ -101,13 +101,6 @@ struct SettingsView: View {
                 .help("Used by watch folders, and preselected in the main window.")
                 Toggle("Check watch folders at launch", isOn: $store.settings.checkWatchFoldersAtLaunch)
             }
-
-            Section("Dates") {
-                Toggle("Use a date spoken in the recording", isOn: $store.settings.useSpokenDateFromTranscript)
-                Text("Copying or syncing a recording often resets its file date. A spoken date, when present, overrides it.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
         }
     }
 
@@ -116,9 +109,6 @@ struct SettingsView: View {
             Section("Before transcribing") {
                 Toggle("Normalize (\u{2212}16 LUFS)", isOn: $store.settings.normalizeAudio)
                     .help("Evens out level so quiet recordings transcribe better. Needs ffmpeg.")
-                Text("Runs on a working copy. The original file is never changed.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
             Section("Exported audio") {
@@ -134,7 +124,7 @@ struct SettingsView: View {
                     Text("Keep source").tag(false)
                 }
                 .disabled(!store.settings.compressAudioOnExport)
-                Text("Files smaller than the target bitrate remain as they are.")
+                Text("Files smaller than the selected bitrate are not altered.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -269,9 +259,6 @@ struct SettingsView: View {
                         Text(policy.label).tag(policy)
                     }
                 }
-                Text("Only working copies live here, never your originals. Applies to every workflow.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -536,6 +523,8 @@ struct WorkflowPolicyEditor: View {
                 }
                 Toggle("Analyze with LM Studio", isOn: $policy.usesSmartAnalysis)
                     .help("Writes the title, summary and filename slug from what was said. Off is much faster.")
+                Toggle("Use a date spoken in the recording", isOn: $policy.useSpokenDateFromTranscript)
+                    .help("Copying or syncing a recording often resets its file date. A spoken date, when present, overrides it.")
                 if policy.transcriptBehavior != .doNotExportTranscript {
                     Toggle("Title line in the note", isOn: $policy.noteIncludesTitle)
                     Picker("Summary in the note", selection: $policy.summaryStyle) {

@@ -1309,7 +1309,7 @@ final class ImportProcessor {
     /// Prefers a date the speaker actually says over the file's own timestamps,
     /// which are often wrong for files that were copied or synced.
     private func applySpokenRecordingDate(from transcript: String, to item: ImportItem) -> ImportItem {
-        guard store.settings.useSpokenDateFromTranscript, item.recordingDateSource != .manual else {
+        guard store.settings.policy(for: item.workflow).useSpokenDateFromTranscript, item.recordingDateSource != .manual else {
             return item
         }
         let spokenDate = item.analysis?.spokenDate

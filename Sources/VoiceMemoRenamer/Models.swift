@@ -197,6 +197,7 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
     var usesSmartAnalysis: Bool
     var summaryStyle: SummaryStyle
     var noteIncludesTitle: Bool
+    var useSpokenDateFromTranscript: Bool
 
     var usesWatchFolder: Bool {
         isEnabled && sourceBehavior.usesWatchFolder && !watchFolderPath.isEmpty
@@ -222,6 +223,7 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         case usesSmartAnalysis
         case summaryStyle
         case noteIncludesTitle
+        case useSpokenDateFromTranscript
     }
 
     init(
@@ -241,7 +243,8 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         processingStoragePolicy: ProcessingStoragePolicy,
         usesSmartAnalysis: Bool = true,
         summaryStyle: SummaryStyle = .sentence,
-        noteIncludesTitle: Bool = true
+        noteIncludesTitle: Bool = true,
+        useSpokenDateFromTranscript: Bool = true
     ) {
         self.id = id
         self.name = name
@@ -260,6 +263,7 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         self.usesSmartAnalysis = usesSmartAnalysis
         self.summaryStyle = summaryStyle
         self.noteIncludesTitle = noteIncludesTitle
+        self.useSpokenDateFromTranscript = useSpokenDateFromTranscript
     }
 
     init(from decoder: Decoder) throws {
@@ -280,6 +284,7 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         usesSmartAnalysis = try container.decodeIfPresent(Bool.self, forKey: .usesSmartAnalysis) ?? true
         summaryStyle = try container.decodeIfPresent(SummaryStyle.self, forKey: .summaryStyle) ?? .sentence
         noteIncludesTitle = try container.decodeIfPresent(Bool.self, forKey: .noteIncludesTitle) ?? true
+        useSpokenDateFromTranscript = try container.decodeIfPresent(Bool.self, forKey: .useSpokenDateFromTranscript) ?? true
 
         if let behavior = try container.decodeIfPresent(AudioFileBehavior.self, forKey: .audioFileBehavior) {
             audioFileBehavior = behavior
@@ -312,6 +317,7 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         try container.encode(usesSmartAnalysis, forKey: .usesSmartAnalysis)
         try container.encode(summaryStyle, forKey: .summaryStyle)
         try container.encode(noteIncludesTitle, forKey: .noteIncludesTitle)
+        try container.encode(useSpokenDateFromTranscript, forKey: .useSpokenDateFromTranscript)
     }
 
     private static func migratedAudioFileBehavior(
@@ -514,7 +520,6 @@ struct AppSettings: Codable, Equatable {
     var normalizeAudio = false
     var compressionBitrateKbps = 96
     var compressionForceMono = true
-    var useSpokenDateFromTranscript = true
 
     enum CodingKeys: String, CodingKey {
         case macWhisperPath
@@ -539,6 +544,11 @@ struct AppSettings: Codable, Equatable {
         case normalizeAudio = "normalizeAudioOnExport"
         case compressionBitrateKbps
         case compressionForceMono
+    }
+
+    /// No longer stored; kept only to migrate old settings files into the
+    /// per-workflow setting of the same name.
+    private enum LegacyCodingKeys: String, CodingKey {
         case useSpokenDateFromTranscript
     }
 
@@ -576,7 +586,14 @@ struct AppSettings: Codable, Equatable {
         normalizeAudio = try container.decodeIfPresent(Bool.self, forKey: .normalizeAudio) ?? false
         compressionBitrateKbps = try container.decodeIfPresent(Int.self, forKey: .compressionBitrateKbps) ?? compressionBitrateKbps
         compressionForceMono = try container.decodeIfPresent(Bool.self, forKey: .compressionForceMono) ?? compressionForceMono
-        useSpokenDateFromTranscript = try container.decodeIfPresent(Bool.self, forKey: .useSpokenDateFromTranscript) ?? useSpokenDateFromTranscript
+        let legacyContainer = try decoder.container(keyedBy: LegacyCodingKeys.self)
+        if let legacyUseSpokenDate = try legacyContainer.decodeIfPresent(Bool.self, forKey: .useSpokenDateFromTranscript) {
+            workflows = workflows.map { policy in
+                var migrated = policy
+                migrated.useSpokenDateFromTranscript = legacyUseSpokenDate
+                return migrated
+            }
+        }
         WorkflowPolicy.defaults.forEach { fallback in
             if !workflows.contains(where: { $0.id == fallback.id }) {
                 workflows.append(fallback)
