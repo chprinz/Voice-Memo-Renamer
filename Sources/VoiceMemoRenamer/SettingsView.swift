@@ -179,6 +179,19 @@ struct SettingsView: View {
 
     private var servicesSection: some View {
         Group {
+            Section("Setup") {
+                HStack {
+                    Text("Re-detect MacWhisper, ffmpeg, and LM Studio from scratch.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Run Setup Assistant Again") {
+                        dismiss()
+                        store.needsSetup = true
+                    }
+                }
+            }
+
             Section("Transcription") {
                 TextField("MacWhisper", text: $store.settings.macWhisperPath)
                 HStack {

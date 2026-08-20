@@ -43,6 +43,7 @@ enum QueueFilter: String, CaseIterable, Identifiable {
 
 enum ConnectivityState {
     case ok
+    case checking
     case idle(String)
     case unknown
     case unavailable(String)
@@ -50,6 +51,7 @@ enum ConnectivityState {
     var color: Color {
         switch self {
         case .ok: .green
+        case .checking: .secondary
         case .idle: .yellow
         case .unknown: .secondary
         case .unavailable: .red
@@ -59,6 +61,7 @@ enum ConnectivityState {
     var summary: String {
         switch self {
         case .ok: "Connected"
+        case .checking: "Checking\u{2026}"
         case .idle: "No model loaded"
         case .unknown: "Not checked yet"
         case .unavailable: "No connection"

@@ -28,11 +28,24 @@ final class ImportStore: ObservableObject {
         didSet { saveSettings() }
     }
 
+    /// Drives whether `SetupWizardView` or `ContentView` is shown. True only on a genuinely
+    /// fresh install — an existing settings file means someone has used the app before, so
+    /// they never see it, even after upgrading to the version that introduced it.
+    @Published var needsSetup: Bool
+
     private var processingTasks: [ImportItem.ID: Task<Void, Never>] = [:]
     private var watchFolderTask: Task<Void, Never>?
     private var isScanningWatchFolders = false
 
+    private static let didCompleteSetupKey = "VoiceMemoRenamer.didCompleteFirstRunSetup"
+
     init() {
+        let hasExistingSettings = FileManager.default.fileExists(atPath: AppPaths.settingsURL.path)
+        let didCompleteSetup = UserDefaults.standard.bool(forKey: Self.didCompleteSetupKey)
+        needsSetup = !hasExistingSettings && !didCompleteSetup
+        if hasExistingSettings {
+            UserDefaults.standard.set(true, forKey: Self.didCompleteSetupKey)
+        }
         ensureDirectories()
         loadSettings()
         loadItems()
@@ -624,6 +637,11 @@ final class ImportStore: ObservableObject {
         ensureDirectories()
         guard let data = try? JSONEncoder.appEncoder.encode(settings) else { return }
         try? data.write(to: AppPaths.settingsURL, options: [.atomic])
+    }
+
+    func markSetupComplete() {
+        UserDefaults.standard.set(true, forKey: Self.didCompleteSetupKey)
+        needsSetup = false
     }
 }
 

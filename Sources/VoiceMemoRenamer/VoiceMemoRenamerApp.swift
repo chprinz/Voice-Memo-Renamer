@@ -7,9 +7,16 @@ struct VoiceMemoRenamerApp: App {
 
     var body: some Scene {
         WindowGroup("Voice Memo Renamer", id: "main") {
-            ContentView()
-                .environmentObject(store)
-                .frame(minWidth: 940, minHeight: 620)
+            Group {
+                if store.needsSetup {
+                    SetupWizardView()
+                } else {
+                    ContentView()
+                }
+            }
+            .environmentObject(store)
+            .frame(minWidth: 940, minHeight: 620)
+            .animation(.easeInOut(duration: 0.4), value: store.needsSetup)
         }
         .windowStyle(.titleBar)
         .defaultSize(width: 1040, height: 720)
