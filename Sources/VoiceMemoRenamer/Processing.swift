@@ -1388,26 +1388,15 @@ final class ImportProcessor {
             ?? TranscriptDateExtractor.detect(in: transcript, referenceDate: Date())
         guard let spokenDate else { return item }
 
+        // File metadata's time of day isn't trustworthy enough to graft onto a spoken
+        // date: re-exports (Voice Memos, Røde apps) commonly stamp a fresh creation
+        // time that has nothing to do with when the recording actually happened. A
+        // spoken date without a spoken time just becomes midnight instead.
         var updated = item
-        updated.recordingDate = Self.merged(spokenDate: spokenDate, keepingClockFrom: item.recordingDate)
+        updated.recordingDate = spokenDate
         updated.recordingDateIsCertain = true
         updated.recordingDateSource = .transcript
         return updated
-    }
-
-    /// A spoken date without a time of day keeps the clock time from the file metadata.
-    private static func merged(spokenDate: Date, keepingClockFrom fallback: Date) -> Date {
-        let calendar = Calendar.current
-        let spokenTime = calendar.dateComponents([.hour, .minute, .second], from: spokenDate)
-        guard spokenTime.hour == 0, spokenTime.minute == 0, spokenTime.second == 0 else {
-            return spokenDate
-        }
-        var components = calendar.dateComponents([.year, .month, .day], from: spokenDate)
-        let clock = calendar.dateComponents([.hour, .minute, .second], from: fallback)
-        components.hour = clock.hour
-        components.minute = clock.minute
-        components.second = clock.second
-        return calendar.date(from: components) ?? spokenDate
     }
 
     /// Automatic routing must never overwrite a workflow the user picked themselves.

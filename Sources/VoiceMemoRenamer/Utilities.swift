@@ -477,6 +477,11 @@ enum TranscriptDateExtractor {
                 continue
             }
             guard var components = pattern.components(match, text) else { continue }
+            // A day and month said out loud almost always mean the current year;
+            // isPlausible below still rejects it if that guess lands in the future.
+            if components.year == nil {
+                components.year = Calendar.current.component(.year, from: referenceDate)
+            }
             let clock = time(in: text, near: match.range)
             components.hour = clock?.hour ?? 0
             components.minute = clock?.minute ?? 0
@@ -532,6 +537,16 @@ enum TranscriptDateExtractor {
             DatePattern(regex: regex(#"\b(\#(monthAlternation))\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\b"#)) { match, text in
                 guard let month = month(match, text, 1), let day = number(match, text, 2), let year = number(match, text, 3) else { return nil }
                 return DateComponents(year: year, month: month, day: day)
+            },
+            // 14. August, no year spoken
+            DatePattern(regex: regex(#"\b(\d{1,2})\.?\s*(\#(monthAlternation))\b"#)) { match, text in
+                guard let day = number(match, text, 1), let month = month(match, text, 2) else { return nil }
+                return DateComponents(month: month, day: day)
+            },
+            // August 14, no year spoken
+            DatePattern(regex: regex(#"\b(\#(monthAlternation))\s+(\d{1,2})(?:st|nd|rd|th)?\b"#)) { match, text in
+                guard let month = month(match, text, 1), let day = number(match, text, 2) else { return nil }
+                return DateComponents(month: month, day: day)
             }
         ]
     }()
