@@ -75,10 +75,48 @@ enum TranscriptBehavior: String, Codable, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .appendToMonthlyNote: "Append to monthly note"
+        case .appendToMonthlyNote: "Append to periodic note"
         case .createMarkdownFile: "Create separate note"
         case .saveTranscriptOnly: "Save transcript only"
         case .doNotExportTranscript: "Write no note"
+        }
+    }
+}
+
+enum NotePeriod: String, Codable, CaseIterable, Identifiable {
+    case daily
+    case weekly
+    case monthly
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .daily: "Daily"
+        case .weekly: "Weekly"
+        case .monthly: "Monthly"
+        }
+    }
+
+    var dateFormatter: DateFormatter {
+        switch self {
+        case .daily: .compactDate
+        case .weekly: .weeklyNote
+        case .monthly: .monthlyNote
+        }
+    }
+}
+
+enum NoteLinkStyle: String, Codable, CaseIterable, Identifiable {
+    case wikilink
+    case markdown
+
+    var id: String { rawValue }
+
+    func audioEmbed(_ filename: String) -> String {
+        switch self {
+        case .wikilink: "![[\(filename)]]"
+        case .markdown: "<audio controls src=\"\(filename)\"></audio>"
         }
     }
 }
@@ -198,6 +236,8 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
     var summaryStyle: SummaryStyle
     var noteIncludesTitle: Bool
     var useSpokenDateFromTranscript: Bool
+    var notePeriod: NotePeriod
+    var noteLinkStyle: NoteLinkStyle?
 
     var usesWatchFolder: Bool {
         isEnabled && sourceBehavior.usesWatchFolder && !watchFolderPath.isEmpty
@@ -224,6 +264,8 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         case summaryStyle
         case noteIncludesTitle
         case useSpokenDateFromTranscript
+        case notePeriod
+        case noteLinkStyle
     }
 
     init(
@@ -244,7 +286,9 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         usesSmartAnalysis: Bool = true,
         summaryStyle: SummaryStyle = .sentence,
         noteIncludesTitle: Bool = true,
-        useSpokenDateFromTranscript: Bool = true
+        useSpokenDateFromTranscript: Bool = true,
+        notePeriod: NotePeriod = .monthly,
+        noteLinkStyle: NoteLinkStyle? = nil
     ) {
         self.id = id
         self.name = name
@@ -264,6 +308,8 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         self.summaryStyle = summaryStyle
         self.noteIncludesTitle = noteIncludesTitle
         self.useSpokenDateFromTranscript = useSpokenDateFromTranscript
+        self.notePeriod = notePeriod
+        self.noteLinkStyle = noteLinkStyle
     }
 
     init(from decoder: Decoder) throws {
@@ -285,6 +331,8 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         summaryStyle = try container.decodeIfPresent(SummaryStyle.self, forKey: .summaryStyle) ?? .sentence
         noteIncludesTitle = try container.decodeIfPresent(Bool.self, forKey: .noteIncludesTitle) ?? true
         useSpokenDateFromTranscript = try container.decodeIfPresent(Bool.self, forKey: .useSpokenDateFromTranscript) ?? true
+        notePeriod = try container.decodeIfPresent(NotePeriod.self, forKey: .notePeriod) ?? .monthly
+        noteLinkStyle = try container.decodeIfPresent(NoteLinkStyle.self, forKey: .noteLinkStyle)
 
         if let behavior = try container.decodeIfPresent(AudioFileBehavior.self, forKey: .audioFileBehavior) {
             audioFileBehavior = behavior
@@ -318,6 +366,8 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         try container.encode(summaryStyle, forKey: .summaryStyle)
         try container.encode(noteIncludesTitle, forKey: .noteIncludesTitle)
         try container.encode(useSpokenDateFromTranscript, forKey: .useSpokenDateFromTranscript)
+        try container.encode(notePeriod, forKey: .notePeriod)
+        try container.encodeIfPresent(noteLinkStyle, forKey: .noteLinkStyle)
     }
 
     private static func migratedAudioFileBehavior(
@@ -502,12 +552,18 @@ struct AppSettings: Codable, Equatable {
     var ffmpegPath = "/opt/homebrew/bin/ffmpeg"
     var lmStudioBaseURL = "http://localhost:1234/v1"
     var lmStudioModelID: String?
-    var vaultRootPath = "\(NSHomeDirectory())/Library/Mobile Documents/iCloud~md~obsidian/Documents/Notes"
+    /// Fresh-install default: deliberately blank. Every fresh-install workflow's
+    /// destinationPath/audioDestinationPath is blank too, so nothing gets written
+    /// anywhere presumptuous until the user actively picks a folder — at which point
+    /// the folder picker always stores an absolute path anyway, making this moot.
+    /// Existing users are unaffected — `init(from:)` below falls back to the old
+    /// Obsidian iCloud path instead, if their settings.json is somehow missing this key.
+    var vaultRootPath = ""
     var voiceInboxRelativePath = "📮INBOX/📻 VOICE INBOX"
     var journalAudioRelativePath = "🖋️ Journal/Audio"
     var monthlyNotesRelativePath = "🖋️ Journal"
     var defaultWorkflow: String = StandardWorkflowID.obsidianJournal
-    var workflows: [WorkflowPolicy] = WorkflowPolicy.defaults
+    var workflows: [WorkflowPolicy] = WorkflowPolicy.freshInstallDefaults
     var maxTranscriptCharactersForAnalysis = 24000
     var transcriptionTimeoutSeconds = 900
     var retryLimit = 2
@@ -520,6 +576,7 @@ struct AppSettings: Codable, Equatable {
     var normalizeAudio = false
     var compressionBitrateKbps = 96
     var compressionForceMono = true
+    var usesObsidian = true
 
     enum CodingKeys: String, CodingKey {
         case macWhisperPath
@@ -544,6 +601,7 @@ struct AppSettings: Codable, Equatable {
         case normalizeAudio = "normalizeAudioOnExport"
         case compressionBitrateKbps
         case compressionForceMono
+        case usesObsidian
     }
 
     /// No longer stored; kept only to migrate old settings files into the
@@ -560,7 +618,8 @@ struct AppSettings: Codable, Equatable {
         ffmpegPath = try container.decodeIfPresent(String.self, forKey: .ffmpegPath) ?? ffmpegPath
         lmStudioBaseURL = try container.decodeIfPresent(String.self, forKey: .lmStudioBaseURL) ?? lmStudioBaseURL
         lmStudioModelID = try container.decodeIfPresent(String.self, forKey: .lmStudioModelID)
-        vaultRootPath = try container.decodeIfPresent(String.self, forKey: .vaultRootPath) ?? vaultRootPath
+        vaultRootPath = try container.decodeIfPresent(String.self, forKey: .vaultRootPath)
+            ?? "\(NSHomeDirectory())/Library/Mobile Documents/iCloud~md~obsidian/Documents/Notes"
         voiceInboxRelativePath = try container.decodeIfPresent(String.self, forKey: .voiceInboxRelativePath) ?? voiceInboxRelativePath
         journalAudioRelativePath = try container.decodeIfPresent(String.self, forKey: .journalAudioRelativePath) ?? journalAudioRelativePath
         monthlyNotesRelativePath = try container.decodeIfPresent(String.self, forKey: .monthlyNotesRelativePath) ?? monthlyNotesRelativePath
@@ -571,7 +630,9 @@ struct AppSettings: Codable, Equatable {
         workflows = workflows.map { policy in
             var migrated = policy
             migrated.id = WorkflowPolicy.canonicalID(policy.id)
-            migrated.name = WorkflowPolicy.canonicalName(for: migrated.id, currentName: migrated.name)
+            if migrated.id != policy.id {
+                migrated.name = WorkflowPolicy.canonicalName(for: migrated.id, currentName: migrated.name)
+            }
             return migrated
         }
         maxTranscriptCharactersForAnalysis = try container.decodeIfPresent(Int.self, forKey: .maxTranscriptCharactersForAnalysis) ?? maxTranscriptCharactersForAnalysis
@@ -586,6 +647,7 @@ struct AppSettings: Codable, Equatable {
         normalizeAudio = try container.decodeIfPresent(Bool.self, forKey: .normalizeAudio) ?? false
         compressionBitrateKbps = try container.decodeIfPresent(Int.self, forKey: .compressionBitrateKbps) ?? compressionBitrateKbps
         compressionForceMono = try container.decodeIfPresent(Bool.self, forKey: .compressionForceMono) ?? compressionForceMono
+        usesObsidian = try container.decodeIfPresent(Bool.self, forKey: .usesObsidian) ?? true
         WorkflowPolicy.defaults.forEach { fallback in
             if !workflows.contains(where: { $0.id == fallback.id }) {
                 workflows.append(fallback)
@@ -633,13 +695,13 @@ extension WorkflowPolicy {
     static func canonicalName(for id: String, currentName: String) -> String {
         switch id {
         case StandardWorkflowID.obsidianJournal:
-            return "Obsidian Journal"
+            return "Journal"
         case StandardWorkflowID.obsidianInbox:
-            return "Obsidian Inbox"
+            return "Note per Recording"
         case StandardWorkflowID.transcriptOnly:
             return "Transcript Only"
         case StandardWorkflowID.renameInPlace:
-            return "Rename in Place"
+            return "Rename Audio Only"
         default:
             return currentName
         }
@@ -648,7 +710,7 @@ extension WorkflowPolicy {
     static let defaults: [WorkflowPolicy] = [
         WorkflowPolicy(
             id: StandardWorkflowID.obsidianJournal,
-            name: "Obsidian Journal",
+            name: "Journal",
             isEnabled: true,
             sourceBehavior: .manualOnly,
             watchFolderPath: "\(NSHomeDirectory())/Library/Mobile Documents/iCloud~com~openplanetsoftware~just-press-record/Documents",
@@ -663,7 +725,7 @@ extension WorkflowPolicy {
         ),
         WorkflowPolicy(
             id: StandardWorkflowID.obsidianInbox,
-            name: "Obsidian Inbox",
+            name: "Note per Recording",
             isEnabled: true,
             sourceBehavior: .manualOnly,
             watchFolderPath: "",
@@ -693,7 +755,7 @@ extension WorkflowPolicy {
         ),
         WorkflowPolicy(
             id: StandardWorkflowID.renameInPlace,
-            name: "Rename in Place",
+            name: "Rename Audio Only",
             isEnabled: true,
             sourceBehavior: .manualOnly,
             watchFolderPath: "",
@@ -706,5 +768,30 @@ extension WorkflowPolicy {
             filenamePattern: defaultFilenamePattern,
             processingStoragePolicy: .deleteAfterSuccessfulExport
         )
+    ]
+
+    /// Starting workflow set for a brand-new install (no settings.json yet).
+    /// Fewer, less Obsidian-branded presets than `defaults`, which stays the
+    /// full backfill list so upgrading users never lose a configured workflow.
+    static let freshInstallDefaults: [WorkflowPolicy] = [
+        {
+            var journal = defaults[0] // Journal
+            // defaults[0]'s watchFolderPath points at a specific personal
+            // recording app's iCloud container — meaningless for a new install.
+            journal.watchFolderPath = ""
+            // No folder guessed on this user's behalf either. Until they choose
+            // one, the monthly note and any copied audio land next to each
+            // recording's own source file — same zero-config fallback every
+            // other fresh-install workflow already uses.
+            journal.destinationPath = ""
+            journal.audioDestinationPath = ""
+            return journal
+        }(),
+        {
+            var noteWorkflow = defaults[1] // Note per Recording
+            noteWorkflow.destinationPath = ""
+            return noteWorkflow
+        }(),
+        defaults[3] // Rename Audio Only
     ]
 }

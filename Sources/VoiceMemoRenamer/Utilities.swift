@@ -50,6 +50,12 @@ extension DateFormatter {
         return formatter
     }()
 
+    static let weeklyNote: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "YYYY-'W'ww"
+        return formatter
+    }()
+
     static let compactDate: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"

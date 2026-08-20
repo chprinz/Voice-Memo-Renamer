@@ -273,6 +273,7 @@ struct LMStudioService {
     var baseURL: URL
     var modelID: String?
     var maxTranscriptCharacters: Int
+    var enabledWorkflowIDs: [String] = []
 
     func analyze(transcript: String) async throws -> AnalysisMetadata {
         let (model, contextTokens) = try await loadedModel()
@@ -363,7 +364,7 @@ struct LMStudioService {
                         "mood": ["type": "string"],
                         "suggested_workflow": [
                             "type": "string",
-                            "enum": ["obsidianJournal", "obsidianInbox", ""]
+                            "enum": enabledWorkflowIDs + [""]
                         ]
                     ],
                     "required": [
@@ -466,7 +467,7 @@ struct LMStudioService {
         - spoken_datetime: Format YYYY-MM-DD oder YYYY-MM-DD HH:MM. Nichts erfinden. Sonst leerer String.
         - themes: 3-6 Tags/Themen, jedes maximal 35 Zeichen.
         - mood: optionaler Text; falls unbekannt, leerer String.
-        - suggested_workflow: einer von obsidianJournal, obsidianInbox; falls unklar, leerer String.
+        - suggested_workflow: einer von \(enabledWorkflowIDs.joined(separator: ", ")); falls unklar, leerer String.
         - Gib niemals das Transkript oder lange Wortketten im JSON wieder.
 
         JSON:
@@ -479,7 +480,7 @@ struct LMStudioService {
           "spoken_datetime": "",
           "themes": ["..."],
           "mood": "...",
-          "suggested_workflow": "obsidianJournal"
+          "suggested_workflow": "\(enabledWorkflowIDs.first ?? "")"
         }
 
         Transkript:
@@ -503,7 +504,7 @@ struct LMStudioService {
         summary_points: 2-4 Stichpunkte, je <= 90 Zeichen.
         spoken_datetime: nur ein am Anfang oder Ende gesagtes Datum, YYYY-MM-DD[ HH:MM], sonst "".
         themes: max 5 kurze Strings.
-        suggested_workflow: "obsidianJournal", "obsidianInbox" oder "".
+        suggested_workflow: \(enabledWorkflowIDs.map { "\"\($0)\"" }.joined(separator: ", ")) oder "".
 
         Transkript:
         \(prepared)
@@ -1044,7 +1045,7 @@ struct ObsidianJournalExporter {
         case .appendToMonthlyNote:
             let monthlyDirectory = transcriptDestinationDirectory(for: policy, vaultRoot: vaultRoot, item: item)
             try FileManager.default.createDirectory(at: monthlyDirectory, withIntermediateDirectories: true)
-            let monthlyURL = monthlyDirectory.appendingPathComponent("\(DateFormatter.monthlyNote.string(from: item.recordingDate)).md")
+            let monthlyURL = monthlyDirectory.appendingPathComponent("\(policy.notePeriod.dateFormatter.string(from: item.recordingDate)).md")
             let entry = markdownEntry(for: item, policy: policy, audioFilename: audioFilename)
             if FileManager.default.fileExists(atPath: monthlyURL.path) {
                 let handle = try FileHandle(forWritingTo: monthlyURL)
@@ -1067,10 +1068,14 @@ struct ObsidianJournalExporter {
         }
     }
 
+    private func linkStyle(for policy: WorkflowPolicy) -> NoteLinkStyle {
+        policy.noteLinkStyle ?? (settings.usesObsidian ? .wikilink : .markdown)
+    }
+
     private func markdownEntry(for item: ImportItem, policy: WorkflowPolicy, audioFilename: String?) -> String {
         var blocks = ["## \(DateFormatter.itemDate.string(from: item.recordingDate))"]
         if let audioFilename {
-            blocks[0] += "\n![[\(audioFilename)]]"
+            blocks[0] += "\n\(linkStyle(for: policy).audioEmbed(audioFilename))"
         }
         if policy.noteIncludesTitle {
             blocks[0] += "\n**\(item.analysis?.title ?? item.displayTitle)**"
@@ -1089,7 +1094,7 @@ struct ObsidianJournalExporter {
         }
         blocks.append(contentsOf: summaryBlock(for: item, policy: policy))
         if let audioFilename {
-            blocks.append("![[\(audioFilename)]]")
+            blocks.append(linkStyle(for: policy).audioEmbed(audioFilename))
         }
         if let transcript = item.transcript?.nilIfBlank {
             blocks.append(transcript)
@@ -1191,7 +1196,8 @@ final class ImportProcessor {
                     let lm = LMStudioService(
                         baseURL: lmStudioURL,
                         modelID: store.settings.lmStudioModelID,
-                        maxTranscriptCharacters: store.settings.maxTranscriptCharactersForAnalysis
+                        maxTranscriptCharacters: store.settings.maxTranscriptCharactersForAnalysis,
+                        enabledWorkflowIDs: store.settings.workflows.filter(\.isEnabled).map(\.id)
                     )
                     let analysis = try await lm.analyze(transcript: transcript)
                     try Task.checkCancellation()

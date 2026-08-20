@@ -99,6 +99,12 @@ struct SettingsView: View {
                     }
                 }
                 .help("Used by watch folders, and preselected in the main window.")
+                Toggle("Obsidian-style notes", isOn: $store.settings.usesObsidian)
+                    .help("Embeds audio with Obsidian's ![[wikilink]] syntax instead of a standard <audio> tag, for workflows that don't set their own link style.")
+                FolderPathRow(
+                    title: store.settings.usesObsidian ? "Obsidian vault" : "Base folder",
+                    path: $store.settings.vaultRootPath
+                )
                 Toggle("Check watch folders at launch", isOn: $store.settings.checkWatchFoldersAtLaunch)
             }
         }
@@ -516,6 +522,13 @@ struct WorkflowPolicyEditor: View {
                         Text(behavior.label).tag(behavior)
                     }
                 }
+                if policy.transcriptBehavior == .appendToMonthlyNote {
+                    Picker("Cadence", selection: $policy.notePeriod) {
+                        ForEach(NotePeriod.allCases) { period in
+                            Text(period.label).tag(period)
+                        }
+                    }
+                }
                 if policy.transcriptBehavior != .doNotExportTranscript {
                     FolderPathRow(title: noteFolderTitle, path: $policy.destinationPath)
                 }
@@ -580,7 +593,7 @@ struct WorkflowPolicyEditor: View {
 
     private var noteFolderTitle: String {
         switch policy.transcriptBehavior {
-        case .appendToMonthlyNote: "Monthly note folder"
+        case .appendToMonthlyNote: "\(policy.notePeriod.label) note folder"
         case .createMarkdownFile, .saveTranscriptOnly: "Note folder"
         case .doNotExportTranscript: "Note folder"
         }

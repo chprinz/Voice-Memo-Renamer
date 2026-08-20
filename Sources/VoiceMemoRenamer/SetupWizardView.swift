@@ -179,7 +179,7 @@ private struct SetupWelcomeStepView: View {
                 Text("Welcome to Voice Memo Renamer")
                     .font(.largeTitle.weight(.semibold))
                     .multilineTextAlignment(.center)
-                Text("Record a thought, and this app transcribes it, writes a title and summary, and files it into your Obsidian journal.")
+                Text("Record a thought, and this app transcribes it, writes a title and summary, and files it into a note for you.")
                     .font(.title3)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -388,7 +388,7 @@ private struct SetupAnalysisStepView: View {
     }
 }
 
-// MARK: - Optional extras (ffmpeg + Obsidian vault)
+// MARK: - Optional extras (ffmpeg + base folder)
 
 private struct SetupExtrasStepView: View {
     @EnvironmentObject private var store: ImportStore
@@ -427,14 +427,14 @@ private struct SetupExtrasStepView: View {
                     .foregroundStyle(Color.accentColor)
                     .frame(width: 22)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Obsidian vault").font(.headline)
-                    Text("Where journal notes and imported audio end up. Change this any time in Settings.")
+                    Text("Base folder").font(.headline)
+                    Text("Where notes and imported audio end up. Change this any time in Settings.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
             }
-            FolderPathRow(title: "Vault", path: $store.settings.vaultRootPath)
+            FolderPathRow(title: "Folder", path: $store.settings.vaultRootPath)
         }
         .padding(Space.l)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
