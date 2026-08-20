@@ -180,10 +180,10 @@ open -n .build/VoiceMemoRenamer.app
 To build a release app and package it as a DMG:
 
 ```bash
-Scripts/build-dmg.sh 1.3.1
+Scripts/build-dmg.sh 1.4.0
 ```
 
-The DMG is written to `dist/VoiceMemoRenamer-1.3.1.dmg`. This script uses ad-hoc signing for local distribution. For broader public distribution, use a Developer ID certificate and notarization.
+The DMG is written to `dist/VoiceMemoRenamer-1.4.0.dmg`. This script uses ad-hoc signing for local distribution. For broader public distribution, use a Developer ID certificate and notarization.
 
 **Requirements:** Xcode app toolchain for building from source, in addition to the runtime requirements above.
 
@@ -191,7 +191,7 @@ The DMG is written to `dist/VoiceMemoRenamer-1.3.1.dmg`. This script uses ad-hoc
 
 ## About This Project
 
-Version `1.3.1`. First public release was `1.0.0`.
+Version `1.4.0`. First public release was `1.0.0`.
 
 I built this for my own voice-note workflow — recording quick thoughts and getting them into Obsidian with a good filename, a transcript, and a short summary. It's not a general-purpose transcription product; it's a personal workflow app made public because it may be useful to others with a similar local-first setup, or as a starting point for their own version.
 
