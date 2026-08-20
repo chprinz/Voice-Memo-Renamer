@@ -11,22 +11,17 @@ A simple voice memo transcription app for macOS that creates or appends Markdown
 - macOS 13 or newer.
 - [MacWhisper](https://goodsnooze.gumroad.com/l/macwhisper) with its CLI installed — this does the transcription.
 - [LM Studio](https://lmstudio.ai) with at least one model downloaded — this generates the title, filename, and summary. It's loaded automatically when needed.
-- Optional: an Obsidian vault, if you want memos appended straight into a journal note.
+- Optional: Obsidian, or any other Markdown-based notes app — neither is required.
 
 **Install:**
 
 1. Download the latest `.dmg` from [Releases](https://github.com/chprinz/Voice-Memo-Renamer/releases) and drag `Voice Memo Renamer.app` into Applications.
 2. The app isn't notarized yet, so macOS will warn you on first launch. Control-click the app, choose **Open**, and confirm.
-3. A setup assistant walks you through MacWhisper, LM Studio, and your Obsidian vault on first launch, auto-detecting what it can and letting you fix the rest inline. You can always re-run it from Settings → Services.
-4. Drag an audio file onto the app and watch it get transcribed, analyzed, and imported.
+3. A setup assistant walks you through MacWhisper, LM Studio, and ffmpeg on first launch, auto-detecting what it can and letting you fix the rest inline. It won't guess where your notes should live — you can always re-run it from Settings → Services.
+4. Pick a folder for the default **Journal** workflow's notes and audio in Settings → Workflows (or skip this — see below).
+5. Drag an audio file onto the app and watch it get transcribed, analyzed, and imported.
 
-By default, memos are appended to your Obsidian journal at:
-
-```text
-~/Library/Mobile Documents/iCloud~md~obsidian/Documents/Notes/🖋️ Journal/YYYY-MM.md
-```
-
-with the audio copied to `.../Journal/Audio/`. All of this — destination, filename patterns, watch folders — is configurable in Settings.
+Nothing is pre-filled with a personal folder or a specific notes app. Until you choose a folder for a workflow, its note and any copied audio are simply written next to the recording's own source file. Whether notes use Obsidian's `![[wikilink]]` audio embeds or a plain `<audio>` tag that works in any Markdown app is controlled by **Obsidian-style notes** in Settings → General (on by default — see [Choosing Where Notes Go](#choosing-where-notes-go) below).
 
 ## What It Does
 
@@ -65,6 +60,21 @@ The app is local-first:
 The app does not intentionally send audio or transcripts to a cloud service. If your Obsidian vault lives in iCloud Drive or another sync provider, those files are handled by that provider after export.
 
 ## Advanced Configuration
+
+<details>
+<summary><strong>Choosing Where Notes Go</strong></summary>
+
+Three workflow presets ship out of the box:
+
+- **Journal** — appends to one shared note on a cadence you set (Settings → Workflows → Output → Cadence: Daily, Weekly, or Monthly). This is the default workflow.
+- **Note per Recording** — writes a separate `.md` file for each import.
+- **Rename Audio Only** — no note at all, just a renamed audio file.
+
+None of them come with a folder pre-selected. Until you pick one (Settings → Workflows → the folder row under Output), a workflow's note — and any audio it copies or moves — is written right next to the original recording's own file. That's a safe, zero-configuration default, not a bug: point a workflow at a real folder once you know where you actually want that kind of note to live.
+
+**Obsidian-style notes** (Settings → General) is a single global switch: on, audio is embedded with Obsidian's `![[wikilink]]` syntax, which Obsidian and Logseq render as an inline player; off, the same embed becomes a plain `<audio controls>` tag, which most Markdown apps render as a player too, and which degrades to visible-but-harmless text in the few that don't render embedded HTML. It's on by default. A workflow can also be given its own link style independent of the global switch, if you ever need one workflow to differ from the rest — that's not exposed in the UI, only in a workflow's saved settings.
+
+</details>
 
 <details>
 <summary><strong>Workflows Without Analysis</strong></summary>
@@ -180,10 +190,10 @@ open -n .build/VoiceMemoRenamer.app
 To build a release app and package it as a DMG:
 
 ```bash
-Scripts/build-dmg.sh 1.4.1
+Scripts/build-dmg.sh 1.5.0
 ```
 
-The DMG is written to `dist/VoiceMemoRenamer-1.4.1.dmg`. This script uses ad-hoc signing for local distribution. For broader public distribution, use a Developer ID certificate and notarization.
+The DMG is written to `dist/VoiceMemoRenamer-1.5.0.dmg`. This script uses ad-hoc signing for local distribution. For broader public distribution, use a Developer ID certificate and notarization.
 
 **Requirements:** Xcode app toolchain for building from source, in addition to the runtime requirements above.
 
@@ -191,7 +201,7 @@ The DMG is written to `dist/VoiceMemoRenamer-1.4.1.dmg`. This script uses ad-hoc
 
 ## About This Project
 
-Version `1.4.1`. First public release was `1.0.0`.
+Version `1.5.0`. First public release was `1.0.0`.
 
 I built this for my own voice-note workflow — recording quick thoughts and getting them into Obsidian with a good filename, a transcript, and a short summary. It's not a general-purpose transcription product; it's a personal workflow app made public because it may be useful to others with a similar local-first setup, or as a starting point for their own version.
 
@@ -200,7 +210,6 @@ I built this for my own voice-note workflow — recording quick thoughts and get
 - Only tested on my own setup.
 - MacWhisper CLI is the only transcription backend right now.
 - LM Studio is the only analysis backend right now.
-- The default workflow is opinionated around Obsidian, iCloud Drive, and monthly journal notes.
 - Import history is written to disk on the main thread, so very large histories will eventually feel sluggish.
 - Public binary distribution is not yet a polished notarized installer flow.
 
