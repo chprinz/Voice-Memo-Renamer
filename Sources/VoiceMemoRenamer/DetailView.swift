@@ -10,6 +10,13 @@ struct ImportDetailView: View {
     @State private var titleDraft = ""
     @State private var summaryDraft = ""
     @State private var transcriptDraft = ""
+    /// Snapshots of the drafts as of the last `syncDrafts()`. Comparing against these
+    /// instead of the live store value is what tells "the user typed something" apart
+    /// from "a draft synced before a background step finished is now stale" — the
+    /// latter must never overwrite a result that only just arrived.
+    @State private var titleBaseline = ""
+    @State private var summaryBaseline = ""
+    @State private var transcriptBaseline = ""
     /// The date is read from the file, so it reads as a fact until the pencil says
     /// otherwise. Unlocking is per recording, never carried to the next one.
     @State private var isEditingRecordingDate = false
@@ -100,6 +107,9 @@ struct ImportDetailView: View {
         titleDraft = item.analysis?.title ?? item.displayTitle
         summaryDraft = item.analysis?.summary ?? ""
         transcriptDraft = item.transcript ?? ""
+        titleBaseline = titleDraft
+        summaryBaseline = summaryDraft
+        transcriptBaseline = transcriptDraft
     }
 
     /// Saves edited title/summary/transcript back to the store. Called on tab switch,
@@ -114,21 +124,25 @@ struct ImportDetailView: View {
         guard var updated = store.item(id: itemID ?? item.id), Self.isEditable(updated) else { return }
         var changed = false
 
-        if titleDraft != (updated.analysis?.title ?? updated.displayTitle) {
+        // Requiring a difference from the baseline (what was on screen right after the
+        // last sync), not just from the live store value, is what keeps a draft that
+        // went stale while a background step was still running from clobbering the
+        // result that step just produced.
+        if titleDraft != titleBaseline, titleDraft != (updated.analysis?.title ?? updated.displayTitle) {
             if updated.analysis == nil {
                 updated.analysis = ImportProcessor.filenameOnlyAnalysis(for: updated)
             }
             updated.analysis?.title = titleDraft
             changed = true
         }
-        if summaryDraft != (updated.analysis?.summary ?? "") {
+        if summaryDraft != summaryBaseline, summaryDraft != (updated.analysis?.summary ?? "") {
             if updated.analysis == nil {
                 updated.analysis = ImportProcessor.filenameOnlyAnalysis(for: updated)
             }
             updated.analysis?.summary = summaryDraft
             changed = true
         }
-        if transcriptDraft != (updated.transcript ?? "") {
+        if transcriptDraft != transcriptBaseline, transcriptDraft != (updated.transcript ?? "") {
             updated.transcript = transcriptDraft
             changed = true
         }
