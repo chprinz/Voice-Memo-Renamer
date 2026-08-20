@@ -586,17 +586,17 @@ struct AppSettings: Codable, Equatable {
         normalizeAudio = try container.decodeIfPresent(Bool.self, forKey: .normalizeAudio) ?? false
         compressionBitrateKbps = try container.decodeIfPresent(Int.self, forKey: .compressionBitrateKbps) ?? compressionBitrateKbps
         compressionForceMono = try container.decodeIfPresent(Bool.self, forKey: .compressionForceMono) ?? compressionForceMono
+        WorkflowPolicy.defaults.forEach { fallback in
+            if !workflows.contains(where: { $0.id == fallback.id }) {
+                workflows.append(fallback)
+            }
+        }
         let legacyContainer = try decoder.container(keyedBy: LegacyCodingKeys.self)
         if let legacyUseSpokenDate = try legacyContainer.decodeIfPresent(Bool.self, forKey: .useSpokenDateFromTranscript) {
             workflows = workflows.map { policy in
                 var migrated = policy
                 migrated.useSpokenDateFromTranscript = legacyUseSpokenDate
                 return migrated
-            }
-        }
-        WorkflowPolicy.defaults.forEach { fallback in
-            if !workflows.contains(where: { $0.id == fallback.id }) {
-                workflows.append(fallback)
             }
         }
         if !workflows.contains(where: { $0.id == defaultWorkflow }) {

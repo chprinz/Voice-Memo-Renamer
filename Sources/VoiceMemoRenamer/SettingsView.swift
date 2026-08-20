@@ -412,7 +412,9 @@ struct SettingsView: View {
                     loadedContextTokens = contextInfo?.loadedContextTokens
                     maxContextTokens = contextInfo?.maxContextTokens
                     if lmStudioModels.isEmpty {
-                        store.settings.lmStudioModelID = nil
+                        // Don't clear the preference here: with no model loaded, this
+                        // is exactly the id LMStudioService.modelKeyToLoad() needs to
+                        // know which model to load automatically on the next import.
                         loadedContextTokens = nil
                         maxContextTokens = nil
                         lmStudioStatus = "No model is loaded in LM Studio."
@@ -444,7 +446,7 @@ struct SettingsView: View {
         let nativeBaseURL = lmStudioNativeBaseURL(from: baseURL)
         let requestURL = nativeBaseURL.appendingPathComponent("models")
         let (data, _) = try await URLSession.shared.data(from: requestURL)
-        let response = try JSONDecoder().decode(SettingsNativeModelsResponse.self, from: data)
+        let response = try JSONDecoder().decode(LMStudioNativeModelsResponse.self, from: data)
         let loadedModels = response.models.filter { !$0.loadedInstances.isEmpty }
         let selectedModel = loadedModels.first { model in
             model.key == preferredModelID || model.loadedInstances.contains { $0.id == preferredModelID }
@@ -654,33 +656,4 @@ private struct SettingsModelsResponse: Decodable {
 private struct LoadedContextInfo {
     var loadedContextTokens: Int
     var maxContextTokens: Int
-}
-
-private struct SettingsNativeModelsResponse: Decodable {
-    struct Model: Decodable {
-        struct LoadedInstance: Decodable {
-            struct Config: Decodable {
-                var contextLength: Int
-
-                enum CodingKeys: String, CodingKey {
-                    case contextLength = "context_length"
-                }
-            }
-
-            var id: String
-            var config: Config
-        }
-
-        var key: String
-        var loadedInstances: [LoadedInstance]
-        var maxContextLength: Int
-
-        enum CodingKeys: String, CodingKey {
-            case key
-            case loadedInstances = "loaded_instances"
-            case maxContextLength = "max_context_length"
-        }
-    }
-
-    var models: [Model]
 }

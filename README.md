@@ -156,7 +156,7 @@ The app does not intentionally send audio or transcripts to a cloud service. If 
 - macOS 13 or newer.
 - Xcode app toolchain for building from source.
 - MacWhisper CLI.
-- LM Studio with a loaded local model.
+- LM Studio with at least one local model downloaded (it is loaded automatically when needed).
 - Optional: Obsidian with an existing vault.
 - Optional: `ffmpeg` (only if you enable loudness normalization; with it on, imports need `ffmpeg` before they can be transcribed). Audio compression and format conversion use the built-in `afconvert`, no extra install needed.
 
@@ -170,7 +170,7 @@ Before importing files, open Settings and check:
 
 - MacWhisper CLI path.
 - LM Studio base URL.
-- Loaded LM Studio model.
+- LM Studio model (only needed if LM Studio has more than one downloaded).
 - Default workflow.
 - Obsidian vault or destination folder paths.
 - `ffmpeg` path, if you plan to enable loudness normalization on a workflow.

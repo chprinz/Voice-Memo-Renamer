@@ -43,12 +43,14 @@ enum QueueFilter: String, CaseIterable, Identifiable {
 
 enum ConnectivityState {
     case ok
+    case idle(String)
     case unknown
     case unavailable(String)
 
     var color: Color {
         switch self {
         case .ok: .green
+        case .idle: .yellow
         case .unknown: .secondary
         case .unavailable: .red
         }
@@ -57,19 +59,25 @@ enum ConnectivityState {
     var summary: String {
         switch self {
         case .ok: "Connected"
+        case .idle: "No model loaded"
         case .unknown: "Not checked yet"
         case .unavailable: "No connection"
         }
     }
 
     var detail: String? {
-        if case .unavailable(let message) = self { return message }
-        return nil
+        switch self {
+        case .idle(let message): message
+        case .unavailable(let message): message
+        default: nil
+        }
     }
 
     var isAvailable: Bool {
-        if case .ok = self { return true }
-        return false
+        switch self {
+        case .ok, .idle: true
+        default: false
+        }
     }
 }
 
@@ -710,19 +718,41 @@ struct ContentView: View {
             return
         }
         do {
-            let requestURL = baseURL.appendingPathComponent("models")
+            // The OpenAI-compatible /v1/models endpoint lists every downloaded model,
+            // loaded or not, so it can't tell us whether one is actually ready. The
+            // native endpoint's loaded_instances is the same signal analysis itself
+            // relies on (LMStudioService.loadedModel()), so the badge agrees with it.
+            let requestURL = connectivityNativeBaseURL(from: baseURL).appendingPathComponent("models")
             var request = URLRequest(url: requestURL)
             request.cachePolicy = .reloadIgnoringLocalCacheData
             request.timeoutInterval = 2
-            let (_, response) = try await URLSession.shared.data(for: request)
-            if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                await MainActor.run { lmStudioState = .unavailable("LM Studio answered, but not with a model list.") }
+                return
+            }
+            let decoded = try? JSONDecoder().decode(LMStudioNativeModelsResponse.self, from: data)
+            let hasLoadedModel = decoded?.models.contains { !$0.loadedInstances.isEmpty } ?? false
+            if hasLoadedModel {
                 await MainActor.run { lmStudioState = .ok }
             } else {
-                await MainActor.run { lmStudioState = .unavailable("LM Studio answered, but not with a model list.") }
+                await MainActor.run { lmStudioState = .idle("LM Studio is running, but no model is loaded yet.") }
             }
         } catch {
             await MainActor.run { lmStudioState = .unavailable(error.localizedDescription) }
         }
+    }
+
+    private func connectivityNativeBaseURL(from openAIBaseURL: URL) -> URL {
+        if openAIBaseURL.path.hasSuffix("/v1") {
+            return openAIBaseURL
+                .deletingLastPathComponent()
+                .appendingPathComponent("api")
+                .appendingPathComponent("v1")
+        }
+        return openAIBaseURL
+            .appendingPathComponent("api")
+            .appendingPathComponent("v1")
     }
 
     // MARK: - Import
@@ -1111,3 +1141,4 @@ struct StatusGlyph: View {
         }
     }
 }
+

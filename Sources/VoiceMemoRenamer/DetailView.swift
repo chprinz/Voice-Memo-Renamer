@@ -284,7 +284,9 @@ struct ImportDetailView: View {
             }
 
             if let error = item.error {
-                AttentionBox(error: error, item: item, showDetails: $showDetails)
+                AttentionBox(error: error, item: item, showDetails: $showDetails) {
+                    selectedTab = "files"
+                }
             }
         }
     }
@@ -569,6 +571,11 @@ struct ImportDetailView: View {
         case .readyForReview:
             Task { await ImportProcessor(store: store).export(item.id) }
         case .needsAttention, .failed:
+            // A user-initiated retry should always get a fresh shot: retryCount only
+            // exists to stop unattended auto-retry loops, not to lock the user out.
+            var updated = item
+            updated.retryCount = 0
+            store.update(updated)
             ImportProcessor(store: store).process(item.id)
         default:
             break
@@ -721,6 +728,7 @@ struct AttentionBox: View {
     var error: ProcessingError
     var item: ImportItem
     @Binding var showDetails: Bool
+    var onShowTechnicalDetails: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -731,6 +739,7 @@ struct AttentionBox: View {
                     Finder.reveal(item.originalPath)
                 }
                 Button("Show technical details") {
+                    onShowTechnicalDetails()
                     showDetails = true
                 }
             }

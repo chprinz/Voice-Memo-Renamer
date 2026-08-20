@@ -250,6 +250,25 @@ private final class ProcessTimeoutState {
     }
 }
 
+/// Serializes LM Studio model-load attempts across concurrently-processing items. Without
+/// this, several items discovering "no model loaded" at once would each fire their own
+/// concurrent load request for the same model.
+private actor LMStudioModelLoadGate {
+    static let shared = LMStudioModelLoadGate()
+
+    private var inFlight: Task<[LMStudioNativeModelsResponse.Model], Error>?
+
+    func loadIfNeeded(_ body: @escaping () async throws -> [LMStudioNativeModelsResponse.Model]) async throws -> [LMStudioNativeModelsResponse.Model] {
+        if let inFlight {
+            return try await inFlight.value
+        }
+        let task = Task { try await body() }
+        inFlight = task
+        defer { inFlight = nil }
+        return try await task.value
+    }
+}
+
 struct LMStudioService {
     var baseURL: URL
     var modelID: String?
@@ -364,9 +383,22 @@ struct LMStudioService {
     }
 
     private func loadedModel() async throws -> (id: String, contextTokens: Int?) {
-        let data = try await nativeGet(path: "models", timeout: 10)
-        let decoded = try JSONDecoder().decode(LMStudioNativeModelsResponse.self, from: data)
-        let loadedModels = decoded.models.filter { !$0.loadedInstances.isEmpty }
+        var models = try await availableModels()
+        var loadedModels = models.filter { !$0.loadedInstances.isEmpty }
+
+        if loadedModels.isEmpty {
+            // Several items can reach this at once (a multi-file import, a watch-folder
+            // scan). Without this gate each would fire its own concurrent load request
+            // for the same model, so only one caller loads at a time; the rest wait
+            // and then see the model the first one already loaded.
+            models = try await LMStudioModelLoadGate.shared.loadIfNeeded {
+                let key = try modelKeyToLoad(from: models)
+                try await loadModel(key: key)
+                return try await availableModels()
+            }
+            loadedModels = models.filter { !$0.loadedInstances.isEmpty }
+        }
+
         guard !loadedModels.isEmpty else {
             throw ProcessingFailure(
                 message: "No LM Studio model is loaded.",
@@ -378,6 +410,35 @@ struct LMStudioService {
         } ?? loadedModels[0]
         let instance = selectedModel.loadedInstances[0]
         return (instance.id, instance.config.contextLength)
+    }
+
+    private func availableModels() async throws -> [LMStudioNativeModelsResponse.Model] {
+        let data = try await nativeGet(path: "models", timeout: 10)
+        return try JSONDecoder().decode(LMStudioNativeModelsResponse.self, from: data).models
+    }
+
+    /// Picks which downloaded-but-unloaded model to load automatically: the one already
+    /// configured in Settings, or the only one LM Studio has, if there's no ambiguity.
+    private func modelKeyToLoad(from models: [LMStudioNativeModelsResponse.Model]) throws -> String {
+        if let modelID, models.contains(where: { $0.key == modelID }) {
+            return modelID
+        }
+        if models.count == 1 {
+            return models[0].key
+        }
+        throw ProcessingFailure(
+            message: "No LM Studio model is loaded.",
+            details: models.isEmpty
+                ? "LM Studio has no downloaded models. Download a model in LM Studio, then try again."
+                : "LM Studio has several downloaded models and none is loaded. Pick one in Settings, then try again."
+        )
+    }
+
+    /// Loading a large model can take minutes, so this uses a much longer timeout than the
+    /// other LM Studio calls, which are all near-instant once a model is already loaded.
+    private func loadModel(key: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["model": key])
+        _ = try await nativePost(path: "models/load", body: body, timeout: 600)
     }
 
     private func analysisPrompt(for transcript: String, maxCharacters: Int) -> String {
@@ -700,6 +761,17 @@ struct LMStudioService {
         request.httpBody = body
         let (data, response) = try await data(for: request)
         try validate(response: response, data: data, fallbackMessage: "LM Studio analysis request failed.")
+        return data
+    }
+
+    private func nativePost(path: String, body: Data, timeout: TimeInterval) async throws -> Data {
+        var request = URLRequest(url: nativeBaseURL.appendingPathComponent(path))
+        request.timeoutInterval = timeout
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        let (data, response) = try await data(for: request)
+        try validate(response: response, data: data, fallbackMessage: "LM Studio model load request failed.")
         return data
     }
 
@@ -1466,7 +1538,10 @@ struct ProcessingFailure: LocalizedError {
     var failureReason: String? { details }
 }
 
-private struct LMStudioNativeModelsResponse: Decodable {
+/// LM Studio's native models list (GET {baseURL}/api/v1/models), shared by every
+/// place in the app that needs to know which models are downloaded and, of those,
+/// which have a loaded instance right now.
+struct LMStudioNativeModelsResponse: Decodable {
     struct Model: Decodable {
         struct LoadedInstance: Decodable {
             struct Config: Decodable {
@@ -1483,10 +1558,12 @@ private struct LMStudioNativeModelsResponse: Decodable {
 
         var key: String
         var loadedInstances: [LoadedInstance]
+        var maxContextLength: Int
 
         enum CodingKeys: String, CodingKey {
             case key
             case loadedInstances = "loaded_instances"
+            case maxContextLength = "max_context_length"
         }
     }
 
