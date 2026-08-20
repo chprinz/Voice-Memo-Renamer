@@ -8,7 +8,7 @@ This is not a general-purpose transcription product yet. It is a personal workfl
 
 ## Status
 
-Version `1.3.0`. First public release was `1.0.0`.
+Version `1.3.1`. First public release was `1.0.0`.
 
 The app currently assumes:
 
@@ -200,13 +200,13 @@ open -n .build/VoiceMemoRenamer.app
 To build a release app and package it as a DMG:
 
 ```bash
-Scripts/build-dmg.sh 1.3.0
+Scripts/build-dmg.sh 1.3.1
 ```
 
 The DMG is written to:
 
 ```text
-dist/VoiceMemoRenamer-1.3.0.dmg
+dist/VoiceMemoRenamer-1.3.1.dmg
 ```
 
 This script uses ad-hoc signing for local distribution. For broader public distribution, use a Developer ID certificate and notarization.
