@@ -5,18 +5,19 @@ struct ImportDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selectedTab = "summary"
     @State private var showDetails = false
-    @State private var isHoveringTranscript = false
     @State private var copyToastMessage: String?
     @State private var titleDraft = ""
     @State private var summaryDraft = ""
     @State private var transcriptDraft = ""
-    /// Snapshots of the drafts as of the last `syncDrafts()`. Comparing against these
-    /// instead of the live store value is what tells "the user typed something" apart
-    /// from "a draft synced before a background step finished is now stale" — the
-    /// latter must never overwrite a result that only just arrived.
-    @State private var titleBaseline = ""
-    @State private var summaryBaseline = ""
-    @State private var transcriptBaseline = ""
+    /// Whether the user has actually typed into each field since it was last reset.
+    /// Bindings read live item data straight from the store until this flips, which
+    /// means there's no transition to catch: a coalesced run of background status
+    /// updates (SwiftUI can collapse several into one observed change, skipping
+    /// intermediate values entirely) can no longer leave a field stuck on a value
+    /// from before the result arrived — an unedited field always shows the latest.
+    @State private var hasEditedTitle = false
+    @State private var hasEditedSummary = false
+    @State private var hasEditedTranscript = false
     /// The date is read from the file, so it reads as a fact until the pencil says
     /// otherwise. Unlocking is per recording, never carried to the next one.
     @State private var isEditingRecordingDate = false
@@ -81,18 +82,13 @@ struct ImportDetailView: View {
         }
         .onAppear {
             loadedItemID = item.id
-            syncDrafts()
+            resetDrafts()
         }
-        // Keyed on the whole item, not just status, so a transcript or analysis that
-        // lands from a background task always reaches the pane — waiting on a status
-        // transition alone missed cases where the pane had been sitting on this
-        // recording since before that background task even started.
-        .onChange(of: item) { _ in refreshPristineDrafts() }
         .onChange(of: item.id) { newID in
             commitTextEdits(to: loadedItemID)
             loadedItemID = newID
             isEditingRecordingDate = false
-            syncDrafts()
+            resetDrafts()
         }
         .onDisappear { commitTextEdits() }
     }
@@ -107,36 +103,40 @@ struct ImportDetailView: View {
         ![.new, .queued, .transcribing, .analyzing, .importing, .imported].contains(item.status)
     }
 
-    private func syncDrafts() {
-        titleDraft = item.analysis?.title ?? item.displayTitle
-        summaryDraft = item.analysis?.summary ?? ""
-        transcriptDraft = item.transcript ?? ""
-        titleBaseline = titleDraft
-        summaryBaseline = summaryDraft
-        transcriptBaseline = transcriptDraft
+    private func resetDrafts() {
+        titleDraft = ""
+        summaryDraft = ""
+        transcriptDraft = ""
+        hasEditedTitle = false
+        hasEditedSummary = false
+        hasEditedTranscript = false
     }
 
-    /// Adopts the item's current values for whichever drafts the user hasn't actually
-    /// touched yet (draft still equal to its own baseline). A draft that differs from
-    /// its baseline is being edited, or holds an edit not yet committed, so it's left
-    /// alone — this only ever pulls in a background result, never overwrites a person.
-    private func refreshPristineDrafts() {
-        guard isEditable else { return }
-        let freshTitle = item.analysis?.title ?? item.displayTitle
-        if titleDraft == titleBaseline, titleDraft != freshTitle {
-            titleDraft = freshTitle
-            titleBaseline = freshTitle
-        }
-        let freshSummary = item.analysis?.summary ?? ""
-        if summaryDraft == summaryBaseline, summaryDraft != freshSummary {
-            summaryDraft = freshSummary
-            summaryBaseline = freshSummary
-        }
-        let freshTranscript = item.transcript ?? ""
-        if transcriptDraft == transcriptBaseline, transcriptDraft != freshTranscript {
-            transcriptDraft = freshTranscript
-            transcriptBaseline = freshTranscript
-        }
+    /// What the field shows: the live item value until the user actually types
+    /// something, then the typed draft — computed fresh on every render, so it can
+    /// never be caught holding a value from before a background result arrived.
+    private var effectiveTitle: String {
+        hasEditedTitle ? titleDraft : (item.analysis?.title ?? item.displayTitle)
+    }
+
+    private var effectiveSummary: String {
+        hasEditedSummary ? summaryDraft : (item.analysis?.summary ?? "")
+    }
+
+    private var effectiveTranscript: String {
+        hasEditedTranscript ? transcriptDraft : (item.transcript ?? "")
+    }
+
+    private var titleBinding: Binding<String> {
+        Binding(get: { effectiveTitle }, set: { titleDraft = $0; hasEditedTitle = true })
+    }
+
+    private var summaryBinding: Binding<String> {
+        Binding(get: { effectiveSummary }, set: { summaryDraft = $0; hasEditedSummary = true })
+    }
+
+    private var transcriptBinding: Binding<String> {
+        Binding(get: { effectiveTranscript }, set: { transcriptDraft = $0; hasEditedTranscript = true })
     }
 
     /// Saves edited title/summary/transcript back to the store. Called on tab switch,
@@ -151,25 +151,21 @@ struct ImportDetailView: View {
         guard var updated = store.item(id: itemID ?? item.id), Self.isEditable(updated) else { return }
         var changed = false
 
-        // Requiring a difference from the baseline (what was on screen right after the
-        // last sync), not just from the live store value, is what keeps a draft that
-        // went stale while a background step was still running from clobbering the
-        // result that step just produced.
-        if titleDraft != titleBaseline, titleDraft != (updated.analysis?.title ?? updated.displayTitle) {
+        if hasEditedTitle {
             if updated.analysis == nil {
                 updated.analysis = ImportProcessor.filenameOnlyAnalysis(for: updated)
             }
             updated.analysis?.title = titleDraft
             changed = true
         }
-        if summaryDraft != summaryBaseline, summaryDraft != (updated.analysis?.summary ?? "") {
+        if hasEditedSummary {
             if updated.analysis == nil {
                 updated.analysis = ImportProcessor.filenameOnlyAnalysis(for: updated)
             }
             updated.analysis?.summary = summaryDraft
             changed = true
         }
-        if transcriptDraft != transcriptBaseline, transcriptDraft != (updated.transcript ?? "") {
+        if hasEditedTranscript {
             updated.transcript = transcriptDraft
             changed = true
         }
@@ -183,7 +179,7 @@ struct ImportDetailView: View {
         HStack(alignment: .top, spacing: 18) {
             VStack(alignment: .leading, spacing: 8) {
                 if isEditable {
-                    TextField("Title", text: $titleDraft, axis: .vertical)
+                    TextField("Title", text: titleBinding, axis: .vertical)
                         .textFieldStyle(.plain)
                         .font(.system(size: 24, weight: .semibold))
                         .lineLimit(1...2)
@@ -260,7 +256,7 @@ struct ImportDetailView: View {
                 filedNotice
             }
 
-            if !summaryIsDisabledForWorkflow || hasSummaryContent {
+            if !summaryIsDisabledForWorkflow {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Summary")
                         .font(.headline)
@@ -274,7 +270,7 @@ struct ImportDetailView: View {
                         }
                     }
                     if isEditable {
-                        TextEditor(text: $summaryDraft)
+                        TextEditor(text: summaryBinding)
                             .font(.body)
                             .frame(minHeight: 60, maxHeight: 120)
                             .padding(6)
@@ -432,9 +428,18 @@ struct ImportDetailView: View {
 
     @ViewBuilder
     private var transcriptSection: some View {
-        if isEditable {
-            ZStack(alignment: .topTrailing) {
-                TextEditor(text: $transcriptDraft)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Spacer()
+                if !effectiveTranscript.isEmpty {
+                    CopyButton(text: effectiveTranscript, help: "Copy transcript") {
+                        showCopyToast("Transcript copied")
+                    }
+                }
+            }
+
+            if isEditable {
+                TextEditor(text: transcriptBinding)
                     .font(.body.monospaced())
                     .frame(minHeight: 240)
                     .padding(6)
@@ -444,31 +449,13 @@ struct ImportDetailView: View {
                         RoundedRectangle(cornerRadius: 6)
                             .strokeBorder(Color(nsColor: .separatorColor))
                     }
-
-                if isHoveringTranscript, !transcriptDraft.isEmpty {
-                    CopyButton(text: transcriptDraft, help: "Copy transcript") {
-                        showCopyToast("Transcript copied")
-                    }
-                        .padding(10)
-                }
-            }
-            .onHover { isHoveringTranscript = $0 }
-        } else {
-            ZStack(alignment: .topTrailing) {
+            } else {
                 Text(item.transcript ?? "Transcript will appear here after MacWhisper finishes.")
                     .font(.body.monospaced())
                     .foregroundStyle(item.transcript == nil ? .secondary : .primary)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
-
-                if isHoveringTranscript, let transcript = item.transcript, !transcript.isEmpty {
-                    CopyButton(text: transcript, help: "Copy transcript") {
-                        showCopyToast("Transcript copied")
-                    }
-                        .padding(6)
-                }
             }
-            .onHover { isHoveringTranscript = $0 }
         }
     }
 
@@ -595,10 +582,6 @@ struct ImportDetailView: View {
     private var summaryIsDisabledForWorkflow: Bool {
         let policy = store.workflowPolicy(for: item.workflow)
         return !policy.usesSmartAnalysis || policy.summaryStyle == .none
-    }
-
-    private var hasSummaryContent: Bool {
-        item.analysis?.summaryPoints?.isEmpty == false || item.analysis?.summary.nilIfBlank != nil
     }
 
     private var placeholderText: String {
