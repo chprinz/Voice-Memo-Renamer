@@ -2,6 +2,8 @@
 
 A simple voice memo transcription app for macOS that creates or appends Markdown notes — like your Obsidian journal. Intelligent filenames and summaries come from a local AI model via LM Studio, so nothing leaves your Mac.
 
+I originally built this to solve one problem: capture a quick voice note with [Just Press Record](https://apps.apple.com/app/just-press-record/id1033342465) and have it automatically transcribed, summarized, and appended to my Obsidian monthly journal note — no manual renaming or copy-pasting. That's still the default **Journal** workflow, though the app has since grown into something more general-purpose. See **Use Case: Just Press Record → Obsidian Journal** under Advanced Configuration below for how to set that up.
+
 ![Voice Memo Renamer current queue with analysis in progress](docs/images/current-analysis.jpg)
 
 ## Get Started
@@ -60,6 +62,22 @@ The app is local-first:
 The app does not intentionally send audio or transcripts to a cloud service. If your Obsidian vault lives in iCloud Drive or another sync provider, those files are handled by that provider after export.
 
 ## Advanced Configuration
+
+<details>
+<summary><strong>Use Case: Just Press Record → Obsidian Journal</strong></summary>
+
+The workflow I built this app for: every voice memo recorded in [Just Press Record](https://apps.apple.com/app/just-press-record/id1033342465) shows up transcribed, summarized, and appended to the right monthly note in Obsidian, with no manual step in between.
+
+1. In Just Press Record, turn on iCloud sync for recordings. They'll land in `~/Library/Mobile Documents/iCloud~com~openplanetsoftware~just-press-record/Documents` on your Mac.
+2. In Voice Memo Renamer, open Settings → Workflows, select **Journal**, and under **Source** set **Recordings come from** to **Watch folder** (or **Manual + Watch folder** if you also want to drag files in yourself sometimes). Point the **Watch folder** picker at that same Just Press Record folder from step 1.
+3. Still on the Journal workflow, set the **Note** folder (under **Note**) to your Obsidian vault's journal folder, keep **Note** set to **Append to periodic note**, and pick whatever **Cadence** — Daily, Weekly, or Monthly — matches how you journal.
+4. Optional: turn on **Check watch folders at launch** in Settings → General, so a recording made while the app wasn't open still gets picked up the next time you open it, instead of waiting for the next watch-folder poll.
+
+From there, the whole workflow is: record a memo, open Voice Memo Renamer. It transcribes, summarizes, and — once you approve it in review, or immediately if you turn off **Review before export** — appends to that day's (or week's, or month's) journal note automatically.
+
+This is one workflow among several the app supports; see **Choosing Where Notes Go** below for the others, including one that skips Obsidian entirely.
+
+</details>
 
 <details>
 <summary><strong>Choosing Where Notes Go</strong></summary>
