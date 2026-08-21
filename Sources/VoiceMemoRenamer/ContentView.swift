@@ -171,6 +171,14 @@ struct ContentView: View {
         .task(id: connectivityRefreshKey) {
             await refreshConnectivityLoop()
         }
+        // The badge otherwise only catches up on the next 5 second poll, and LM
+        // Studio's local server can be slow to answer other requests while a model
+        // load is in flight, so a poll that lands mid-load can undercount and leave
+        // the dot yellow until the poll after next. Re-checking the moment analysis
+        // stops needing a model closes that gap immediately instead of waiting on it.
+        .onChange(of: isLMStudioActive) { _ in
+            Task { await refreshConnectivity() }
+        }
     }
 
     // MARK: - Top bar

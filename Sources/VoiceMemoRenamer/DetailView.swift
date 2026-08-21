@@ -83,7 +83,11 @@ struct ImportDetailView: View {
             loadedItemID = item.id
             syncDrafts()
         }
-        .onChange(of: item.status) { _ in if isEditable { syncDrafts() } }
+        // Keyed on the whole item, not just status, so a transcript or analysis that
+        // lands from a background task always reaches the pane — waiting on a status
+        // transition alone missed cases where the pane had been sitting on this
+        // recording since before that background task even started.
+        .onChange(of: item) { _ in refreshPristineDrafts() }
         .onChange(of: item.id) { newID in
             commitTextEdits(to: loadedItemID)
             loadedItemID = newID
@@ -110,6 +114,29 @@ struct ImportDetailView: View {
         titleBaseline = titleDraft
         summaryBaseline = summaryDraft
         transcriptBaseline = transcriptDraft
+    }
+
+    /// Adopts the item's current values for whichever drafts the user hasn't actually
+    /// touched yet (draft still equal to its own baseline). A draft that differs from
+    /// its baseline is being edited, or holds an edit not yet committed, so it's left
+    /// alone — this only ever pulls in a background result, never overwrites a person.
+    private func refreshPristineDrafts() {
+        guard isEditable else { return }
+        let freshTitle = item.analysis?.title ?? item.displayTitle
+        if titleDraft == titleBaseline, titleDraft != freshTitle {
+            titleDraft = freshTitle
+            titleBaseline = freshTitle
+        }
+        let freshSummary = item.analysis?.summary ?? ""
+        if summaryDraft == summaryBaseline, summaryDraft != freshSummary {
+            summaryDraft = freshSummary
+            summaryBaseline = freshSummary
+        }
+        let freshTranscript = item.transcript ?? ""
+        if transcriptDraft == transcriptBaseline, transcriptDraft != freshTranscript {
+            transcriptDraft = freshTranscript
+            transcriptBaseline = freshTranscript
+        }
     }
 
     /// Saves edited title/summary/transcript back to the store. Called on tab switch,
