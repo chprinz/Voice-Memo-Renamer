@@ -745,7 +745,7 @@ extension WorkflowPolicy {
         case StandardWorkflowID.obsidianJournal:
             return "Journal"
         case StandardWorkflowID.obsidianInbox:
-            return "Note per Recording"
+            return "Transcribe Only"
         case StandardWorkflowID.transcriptOnly:
             return "Transcript Only"
         case StandardWorkflowID.renameInPlace:
@@ -761,10 +761,10 @@ extension WorkflowPolicy {
             name: "Journal",
             isEnabled: true,
             sourceBehavior: .manualOnly,
-            watchFolderPath: "\(NSHomeDirectory())/Library/Mobile Documents/iCloud~com~openplanetsoftware~just-press-record/Documents",
+            watchFolderPath: "",
             destination: .obsidianJournal,
-            destinationPath: "🖋️ Journal",
-            audioDestinationPath: "🖋️ Journal/Audio",
+            destinationPath: "",
+            audioDestinationPath: "",
             transcriptBehavior: .appendToMonthlyNote,
             audioFileBehavior: .copyToFolder,
             reviewBehavior: .requireReview,
@@ -773,12 +773,12 @@ extension WorkflowPolicy {
         ),
         WorkflowPolicy(
             id: StandardWorkflowID.obsidianInbox,
-            name: "Note per Recording",
+            name: "Transcribe Only",
             isEnabled: true,
             sourceBehavior: .manualOnly,
             watchFolderPath: "",
             destination: .obsidianInbox,
-            destinationPath: "📮INBOX/📻 VOICE INBOX",
+            destinationPath: "",
             audioDestinationPath: "",
             transcriptBehavior: .createMarkdownFile,
             audioFileBehavior: .leaveInPlace,
@@ -822,24 +822,8 @@ extension WorkflowPolicy {
     /// Fewer, less Obsidian-branded presets than `defaults`, which stays the
     /// full backfill list so upgrading users never lose a configured workflow.
     static let freshInstallDefaults: [WorkflowPolicy] = [
-        {
-            var journal = defaults[0] // Journal
-            // defaults[0]'s watchFolderPath points at a specific personal
-            // recording app's iCloud container — meaningless for a new install.
-            journal.watchFolderPath = ""
-            // No folder guessed on this user's behalf either. Until they choose
-            // one, the monthly note and any copied audio land next to each
-            // recording's own source file — same zero-config fallback every
-            // other fresh-install workflow already uses.
-            journal.destinationPath = ""
-            journal.audioDestinationPath = ""
-            return journal
-        }(),
-        {
-            var noteWorkflow = defaults[1] // Note per Recording
-            noteWorkflow.destinationPath = ""
-            return noteWorkflow
-        }(),
-        defaults[3] // Rename Audio Only
+        defaults[0], // Journal
+        defaults[1], // Transcribe Only
+        defaults[3]  // Rename Audio Only
     ]
 }

@@ -935,8 +935,9 @@ struct ServiceBadge: View {
         .padding(.vertical, 3)
         .help(helpText)
         .animation(.easeInOut(duration: 0.25), value: state.color)
-        .onAppear(perform: updatePulse)
-        .onChange(of: isActive) { _ in updatePulse() }
+        .task(id: isActive) {
+            await runBlink()
+        }
     }
 
     private var helpText: String {
@@ -949,18 +950,23 @@ struct ServiceBadge: View {
 
     private var dotOpacity: Double {
         guard state.isAvailable else { return 1 }
-        return isActive ? (pulse ? 1 : 0.3) : 1
+        return isActive ? (pulse ? 1 : 0.15) : 1
     }
 
-    private func updatePulse() {
-        if isActive {
-            withAnimation(.easeInOut(duration: 0.35).repeatForever(autoreverses: true)) {
-                pulse = true
+    /// SwiftUI's `repeatForever` meta-animation doesn't reliably keep cycling once
+    /// hosted inside a macOS toolbar item — it applies the first flip and then
+    /// stalls, leaving the dot dim instead of blinking. Toggling on an explicit
+    /// timer forces a real state change (and redraw) every tick instead.
+    private func runBlink() async {
+        guard isActive else {
+            pulse = false
+            return
+        }
+        while !Task.isCancelled {
+            withAnimation(.linear(duration: 0.1)) {
+                pulse.toggle()
             }
-        } else {
-            withAnimation(.easeOut(duration: 0.2)) {
-                pulse = false
-            }
+            try? await Task.sleep(nanoseconds: 130_000_000)
         }
     }
 }

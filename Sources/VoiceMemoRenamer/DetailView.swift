@@ -260,15 +260,6 @@ struct ImportDetailView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Summary")
                         .font(.headline)
-                    if let points = item.analysis?.summaryPoints, !points.isEmpty {
-                        VStack(alignment: .leading, spacing: 4) {
-                            ForEach(points, id: \.self) { point in
-                                Text("• \(point)")
-                                    .font(.body)
-                                    .textSelection(.enabled)
-                            }
-                        }
-                    }
                     if isEditable {
                         TextEditor(text: summaryBinding)
                             .font(.body)
@@ -472,50 +463,14 @@ struct ImportDetailView: View {
                 DetailLine(label: "Original path", value: sourcePath)
             }
             DetailLine(label: "Audio in use", value: item.originalPath)
-            if let managedAudioPath = item.managedAudioPath {
-                DetailLine(label: "Temporary copy", value: managedAudioPath)
-            }
-            if let fingerprint = item.audioFingerprint {
-                DetailLine(label: "Audio fingerprint", value: fingerprint)
-            }
             DetailLine(label: "Generated filename", value: generatedFilename)
-            DetailLine(label: "Slug", value: item.analysis?.slug ?? "Not analyzed")
-            DetailLine(label: "Short slug", value: item.analysis?.shortSlug ?? "Not analyzed")
             DetailLine(label: "Recording date", value: "\(item.recordingDateIsCertain ? "Certain" : "Estimated") - \(item.recordingDateSource.label)")
             if let format = audioFormatSummary {
                 DetailLine(label: "Audio format", value: format)
             }
-            if let exported = item.exportedMarkdownPath {
-                DetailLine(label: markdownNoteTitle, value: exported)
-            }
-            ForEach(temporaryOperations) { operation in
-                DetailLine(label: Self.operationLabel(operation.kind), value: operation.destinationPath.isEmpty ? operation.sourcePath : operation.destinationPath)
-            }
             if let error = item.error {
                 DetailLine(label: "Last error", value: error.technicalDetails)
             }
-        }
-    }
-
-    /// Internal operation kinds are snake_case identifiers meant for the log, not
-    /// for reading. Map the ones that surface here; fall back to a de-underscored
-    /// form so a new kind degrades instead of disappearing.
-    static func operationLabel(_ kind: String) -> String {
-        switch kind {
-        case "managed_processing_copy": "Temporary copy made"
-        case "delete_managed_processing_copy": "Temporary copy deleted"
-        case "delete_drop_import_copy": "Dropped copy deleted"
-        case "temporary_processing_copy": "Converted copy made"
-        case "delete_temporary_processing_copy": "Converted copy deleted"
-        case "normalize": "Normalized"
-        case "delete_normalized_copy": "Normalized copy deleted"
-        case "clear_cache": "Cleared from cache"
-        case "rename_original": "Original renamed"
-        case "append": "Appended to note"
-        case "write": "Note written"
-        case "move", "normalize_move", "compress_move", "normalize_compress_move": "Audio moved"
-        case "copy", "normalize_copy", "compress_copy", "normalize_compress_copy": "Audio copied"
-        default: kind.replacingOccurrences(of: "_", with: " ").capitalizedFirst
         }
     }
 
@@ -524,28 +479,11 @@ struct ImportDetailView: View {
             "Original filename: \(item.sourceFilename ?? item.originalFilename)",
             "Audio in use: \(item.originalPath)",
             "Generated filename: \(generatedFilename)",
-            "Slug: \(item.analysis?.slug ?? "Not analyzed")",
-            "Short slug: \(item.analysis?.shortSlug ?? "Not analyzed")",
             "Recording date: \(item.recordingDateIsCertain ? "Certain" : "Estimated")"
         ]
-        if let sourcePath = item.sourcePath, sourcePath != item.originalPath {
-            let label = isCachePath(sourcePath) ? "Temporary copy" : "Original path"
-            lines.insert("\(label): \(sourcePath)", at: 1)
+        if let sourcePath = item.sourcePath, sourcePath != item.originalPath, !isCachePath(sourcePath) {
+            lines.insert("Original path: \(sourcePath)", at: 1)
         }
-        if let managedAudioPath = item.managedAudioPath {
-            lines.insert("Temporary copy: \(managedAudioPath)", at: min(2, lines.count))
-        }
-        if let fingerprint = item.audioFingerprint {
-            lines.append("Audio fingerprint: \(fingerprint)")
-        }
-        if let exported = item.exportedMarkdownPath {
-            lines.append("\(markdownNoteTitle): \(exported)")
-        }
-        lines.append(contentsOf: temporaryOperations.map { operation in
-            let label = Self.operationLabel(operation.kind)
-            let value = operation.destinationPath.isEmpty ? operation.sourcePath : operation.destinationPath
-            return "\(label): \(value)"
-        })
         if let error = item.error {
             lines.append("Last error: \(error.technicalDetails)")
         }
@@ -636,7 +574,7 @@ struct ImportDetailView: View {
         case .doNotExportTranscript:
             return "Not written by this workflow"
         case .appendToMonthlyNote, .createMarkdownFile, .saveTranscriptOnly:
-            return "Written when the recording is imported"
+            return "Not written yet — happens when you approve"
         }
     }
 
@@ -667,15 +605,6 @@ struct ImportDetailView: View {
             .compactMap({ $0 })
             .first(where: { FileManager.default.fileExists(atPath: $0) }) else { return nil }
         return AudioInspector.formatSummary(for: URL(fileURLWithPath: path))
-    }
-
-    private var temporaryOperations: [FileOperationRecord] {
-        item.fileOperations.filter { operation in
-            operation.kind.contains("temporary_processing")
-                || operation.kind.contains("managed_processing")
-                || operation.kind == "delete_managed_processing_copy"
-                || operation.kind == "clear_cache"
-        }
     }
 
     private func isCachePath(_ path: String) -> Bool {

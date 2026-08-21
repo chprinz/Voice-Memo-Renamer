@@ -67,7 +67,7 @@ The app does not intentionally send audio or transcripts to a cloud service. If 
 Three workflow presets ship out of the box:
 
 - **Journal** — appends to one shared note on a cadence you set (Settings → Workflows → Note → Cadence: Daily, Weekly, or Monthly). This is the default workflow.
-- **Note per Recording** — writes a separate `.md` file for each import.
+- **Transcribe Only** — writes a separate `.md` file for each import.
 - **Rename Audio Only** — no note at all, just a renamed audio file.
 
 None of them come with a folder pre-selected. Until you pick one (Settings → Workflows → the folder row under Note or Audio file), a workflow's note — and any audio it copies or moves — is written right next to the original recording's own file. That's a safe, zero-configuration default, not a bug: point a workflow at a real folder once you know where you actually want that kind of note to live.
@@ -190,10 +190,10 @@ open -n .build/VoiceMemoRenamer.app
 To build a release app and package it as a DMG:
 
 ```bash
-Scripts/build-dmg.sh 1.6.0
+Scripts/build-dmg.sh 1.6.2
 ```
 
-The DMG is written to `dist/VoiceMemoRenamer-1.6.0.dmg`. This script uses ad-hoc signing for local distribution. For broader public distribution, use a Developer ID certificate and notarization.
+The DMG is written to `dist/VoiceMemoRenamer-1.6.2.dmg`. This script uses ad-hoc signing for local distribution. For broader public distribution, use a Developer ID certificate and notarization.
 
 **Requirements:** Xcode app toolchain for building from source, in addition to the runtime requirements above.
 
@@ -201,7 +201,7 @@ The DMG is written to `dist/VoiceMemoRenamer-1.6.0.dmg`. This script uses ad-hoc
 
 ## About This Project
 
-Version `1.6.0`. First public release was `1.0.0`.
+Version `1.6.2`. First public release was `1.0.0`.
 
 I built this for my own voice-note workflow — recording quick thoughts and getting them into Obsidian with a good filename, a transcript, and a short summary. It's not a general-purpose transcription product; it's a personal workflow app made public because it may be useful to others with a similar local-first setup, or as a starting point for their own version.
 
