@@ -388,7 +388,7 @@ private struct SetupAnalysisStepView: View {
     }
 }
 
-// MARK: - Optional extras (ffmpeg + base folder)
+// MARK: - Optional extras (ffmpeg)
 
 private struct SetupExtrasStepView: View {
     @EnvironmentObject private var store: ImportStore
@@ -398,7 +398,7 @@ private struct SetupExtrasStepView: View {
         SetupStepScaffold(
             icon: "slider.horizontal.3",
             title: "Optional extras",
-            subtitle: "Both of these are optional — the app works fine without them."
+            subtitle: "This is optional — the app works fine without it."
         ) {
             VStack(spacing: Space.l) {
                 SetupServiceCard(
@@ -413,32 +413,9 @@ private struct SetupExtrasStepView: View {
                     onCheck: { Task { await check() } },
                     actions: [("Get Homebrew", openHomebrewPage)]
                 )
-                vaultCard
             }
         }
         .task { await autoDetectAndCheck() }
-    }
-
-    private var vaultCard: some View {
-        VStack(alignment: .leading, spacing: Space.m) {
-            HStack(spacing: Space.s) {
-                Image(systemName: "folder")
-                    .font(.title3)
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: 22)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Base folder").font(.headline)
-                    Text("Where notes and imported audio end up. Change this any time in Settings.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-            }
-            FolderPathRow(title: "Folder", path: $store.settings.vaultRootPath)
-        }
-        .padding(Space.l)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(nsColor: .separatorColor)))
     }
 
     @MainActor

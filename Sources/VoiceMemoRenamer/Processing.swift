@@ -867,6 +867,15 @@ private enum AnalysisOutputLanguage {
 /// Nonisolated on purpose: copying, compressing and normalising audio blocks for
 /// seconds, and running that on the main actor froze the whole window, including any
 /// sheet opened on top of it.
+/// How (or whether) this export should reference the recording's audio in the note.
+private enum AudioReference {
+    case none
+    /// Audio was copied/moved into the note's folder — reference it by filename.
+    case colocated(filename: String)
+    /// Audio was never moved into the note's folder — reference it by its real path.
+    case remote(absolutePath: String)
+}
+
 struct ObsidianJournalExporter {
     var settings: AppSettings
     /// Awaited at each step, so a checkpoint can never land after the final result.
@@ -885,9 +894,9 @@ struct ObsidianJournalExporter {
             try FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
 
             let isMove = policy.audioFileBehavior == .moveToFolder
-            let willCompress = settings.compressAudioOnExport
-                && AudioCompressor.shouldCompress(sourceAudioURL, targetBitrateKbps: settings.compressionBitrateKbps)
-            let willNormalize = settings.normalizeAudio
+            let willCompress = policy.compressAudioOnExport
+                && AudioCompressor.shouldCompress(sourceAudioURL, targetBitrateKbps: policy.compressionBitrateKbps)
+            let willNormalize = policy.normalizeAudio
 
             var processedAudioURL = sourceAudioURL
             var normalizedTempURL: URL?
@@ -917,8 +926,8 @@ struct ObsidianJournalExporter {
                 try AudioCompressor.compress(
                     source: processedAudioURL,
                     to: destinationAudioURL,
-                    bitrateKbps: settings.compressionBitrateKbps,
-                    forceMono: settings.compressionForceMono
+                    bitrateKbps: policy.compressionBitrateKbps,
+                    forceMono: policy.compressionForceMono
                 )
                 if isMove {
                     try? FileManager.default.removeItem(at: sourceAudioURL)
@@ -968,11 +977,24 @@ struct ObsidianJournalExporter {
             await checkpoint?(updated)
         }
 
+        let audioReference: AudioReference
+        if let exportedAudioURL {
+            audioReference = policy.embedAudioInNote ? .colocated(filename: exportedAudioURL.lastPathComponent) : .none
+        } else if policy.embedAudioInNote,
+                  policy.audioFileBehavior == .leaveInPlace || policy.audioFileBehavior == .renameInPlace {
+            // Audio never moved into the note's folder, so there's nothing a
+            // same-folder filename could point at — reference it where it actually
+            // lives instead.
+            audioReference = .remote(absolutePath: updated.originalPath)
+        } else {
+            audioReference = .none
+        }
+
         if let markdownURL = try exportTranscriptIfNeeded(
             item: updated,
             policy: policy,
             vaultRoot: vaultRoot,
-            audioFilename: exportedAudioURL?.lastPathComponent
+            audioReference: audioReference
         ) {
             updated.exportedMarkdownPath = markdownURL.path
             updated.fileOperations.append(FileOperationRecord(
@@ -1040,13 +1062,13 @@ struct ObsidianJournalExporter {
         return vaultRoot.appendingPathComponent(path, isDirectory: true)
     }
 
-    private func exportTranscriptIfNeeded(item: ImportItem, policy: WorkflowPolicy, vaultRoot: URL, audioFilename: String?) throws -> URL? {
+    private func exportTranscriptIfNeeded(item: ImportItem, policy: WorkflowPolicy, vaultRoot: URL, audioReference: AudioReference) throws -> URL? {
         switch policy.transcriptBehavior {
         case .appendToMonthlyNote:
             let monthlyDirectory = transcriptDestinationDirectory(for: policy, vaultRoot: vaultRoot, item: item)
             try FileManager.default.createDirectory(at: monthlyDirectory, withIntermediateDirectories: true)
             let monthlyURL = monthlyDirectory.appendingPathComponent("\(policy.notePeriod.dateFormatter.string(from: item.recordingDate)).md")
-            let entry = markdownEntry(for: item, policy: policy, audioFilename: audioFilename)
+            let entry = markdownEntry(for: item, policy: policy, audioReference: audioReference)
             if FileManager.default.fileExists(atPath: monthlyURL.path) {
                 let handle = try FileHandle(forWritingTo: monthlyURL)
                 try handle.seekToEnd()
@@ -1061,21 +1083,25 @@ struct ObsidianJournalExporter {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let base = FilenamePattern.render(pattern: policy.filenamePattern, item: item, workflowName: policy.name, includeExtension: false)
             let markdownURL = uniqueURL(in: directory, filename: "\(base).md")
-            try Data(markdownDocument(for: item, policy: policy, audioFilename: audioFilename).utf8).write(to: markdownURL, options: [.atomic])
+            try Data(markdownDocument(for: item, policy: policy, audioReference: audioReference).utf8).write(to: markdownURL, options: [.atomic])
             return markdownURL
         case .doNotExportTranscript:
             return nil
         }
     }
 
-    private func linkStyle(for policy: WorkflowPolicy) -> NoteLinkStyle {
-        policy.noteLinkStyle ?? (settings.usesObsidian ? .wikilink : .markdown)
+    private func audioEmbedLine(for policy: WorkflowPolicy, audioReference: AudioReference) -> String? {
+        switch audioReference {
+        case .none: nil
+        case .colocated(let filename): policy.noteLinkStyle.audioEmbed(filename)
+        case .remote(let absolutePath): NoteLinkStyle.remoteAudioEmbed(absolutePath: absolutePath)
+        }
     }
 
-    private func markdownEntry(for item: ImportItem, policy: WorkflowPolicy, audioFilename: String?) -> String {
+    private func markdownEntry(for item: ImportItem, policy: WorkflowPolicy, audioReference: AudioReference) -> String {
         var blocks = ["## \(DateFormatter.itemDate.string(from: item.recordingDate))"]
-        if let audioFilename {
-            blocks[0] += "\n\(linkStyle(for: policy).audioEmbed(audioFilename))"
+        if let embed = audioEmbedLine(for: policy, audioReference: audioReference) {
+            blocks[0] += "\n\(embed)"
         }
         if policy.noteIncludesTitle {
             blocks[0] += "\n**\(item.analysis?.title ?? item.displayTitle)**"
@@ -1087,14 +1113,14 @@ struct ObsidianJournalExporter {
         return blocks.joined(separator: "\n\n")
     }
 
-    private func markdownDocument(for item: ImportItem, policy: WorkflowPolicy, audioFilename: String?) -> String {
+    private func markdownDocument(for item: ImportItem, policy: WorkflowPolicy, audioReference: AudioReference) -> String {
         var blocks: [String] = []
         if policy.noteIncludesTitle {
             blocks.append("# \(item.analysis?.title ?? item.displayTitle)")
         }
         blocks.append(contentsOf: summaryBlock(for: item, policy: policy))
-        if let audioFilename {
-            blocks.append(linkStyle(for: policy).audioEmbed(audioFilename))
+        if let embed = audioEmbedLine(for: policy, audioReference: audioReference) {
+            blocks.append(embed)
         }
         if let transcript = item.transcript?.nilIfBlank {
             blocks.append(transcript)
@@ -1241,7 +1267,7 @@ final class ImportProcessor {
     /// Produces the loudness-normalized copy that both transcription and the exported
     /// audio use. Runs once per item and is reused on retries.
     private func normalizeIfNeeded(_ item: ImportItem) async throws -> ImportItem {
-        guard store.settings.normalizeAudio else { return item }
+        guard store.workflowPolicy(for: item.workflow).normalizeAudio else { return item }
         if let existing = item.normalizedAudioPath, FileManager.default.fileExists(atPath: existing) {
             return item
         }

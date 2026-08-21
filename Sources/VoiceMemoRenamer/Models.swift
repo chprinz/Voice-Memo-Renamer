@@ -113,11 +113,27 @@ enum NoteLinkStyle: String, Codable, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    var label: String {
+        switch self {
+        case .wikilink: "Obsidian wikilink"
+        case .markdown: "Standard audio tag"
+        }
+    }
+
     func audioEmbed(_ filename: String) -> String {
         switch self {
         case .wikilink: "![[\(filename)]]"
         case .markdown: "<audio controls src=\"\(filename)\"></audio>"
         }
+    }
+
+    /// For audio that was never copied into the note's folder (Leave in place /
+    /// Rename in place): a wikilink can't be trusted to resolve, since Obsidian
+    /// finds it by searching the whole vault by filename, and the file may not
+    /// even be inside the vault. The absolute path always works instead.
+    static func remoteAudioEmbed(absolutePath: String) -> String {
+        let url = URL(fileURLWithPath: absolutePath)
+        return "<audio controls src=\"\(url.absoluteString)\"></audio>"
     }
 }
 
@@ -237,7 +253,12 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
     var noteIncludesTitle: Bool
     var useSpokenDateFromTranscript: Bool
     var notePeriod: NotePeriod
-    var noteLinkStyle: NoteLinkStyle?
+    var noteLinkStyle: NoteLinkStyle
+    var embedAudioInNote: Bool
+    var normalizeAudio: Bool
+    var compressAudioOnExport: Bool
+    var compressionBitrateKbps: Int
+    var compressionForceMono: Bool
 
     var usesWatchFolder: Bool {
         isEnabled && sourceBehavior.usesWatchFolder && !watchFolderPath.isEmpty
@@ -266,6 +287,11 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         case useSpokenDateFromTranscript
         case notePeriod
         case noteLinkStyle
+        case embedAudioInNote
+        case normalizeAudio
+        case compressAudioOnExport
+        case compressionBitrateKbps
+        case compressionForceMono
     }
 
     init(
@@ -288,7 +314,12 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         noteIncludesTitle: Bool = true,
         useSpokenDateFromTranscript: Bool = true,
         notePeriod: NotePeriod = .monthly,
-        noteLinkStyle: NoteLinkStyle? = nil
+        noteLinkStyle: NoteLinkStyle = .wikilink,
+        embedAudioInNote: Bool = true,
+        normalizeAudio: Bool = false,
+        compressAudioOnExport: Bool = false,
+        compressionBitrateKbps: Int = 96,
+        compressionForceMono: Bool = true
     ) {
         self.id = id
         self.name = name
@@ -310,6 +341,11 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         self.useSpokenDateFromTranscript = useSpokenDateFromTranscript
         self.notePeriod = notePeriod
         self.noteLinkStyle = noteLinkStyle
+        self.embedAudioInNote = embedAudioInNote
+        self.normalizeAudio = normalizeAudio
+        self.compressAudioOnExport = compressAudioOnExport
+        self.compressionBitrateKbps = compressionBitrateKbps
+        self.compressionForceMono = compressionForceMono
     }
 
     init(from decoder: Decoder) throws {
@@ -332,7 +368,12 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         noteIncludesTitle = try container.decodeIfPresent(Bool.self, forKey: .noteIncludesTitle) ?? true
         useSpokenDateFromTranscript = try container.decodeIfPresent(Bool.self, forKey: .useSpokenDateFromTranscript) ?? true
         notePeriod = try container.decodeIfPresent(NotePeriod.self, forKey: .notePeriod) ?? .monthly
-        noteLinkStyle = try container.decodeIfPresent(NoteLinkStyle.self, forKey: .noteLinkStyle)
+        noteLinkStyle = try container.decodeIfPresent(NoteLinkStyle.self, forKey: .noteLinkStyle) ?? .wikilink
+        embedAudioInNote = try container.decodeIfPresent(Bool.self, forKey: .embedAudioInNote) ?? true
+        normalizeAudio = try container.decodeIfPresent(Bool.self, forKey: .normalizeAudio) ?? false
+        compressAudioOnExport = try container.decodeIfPresent(Bool.self, forKey: .compressAudioOnExport) ?? false
+        compressionBitrateKbps = try container.decodeIfPresent(Int.self, forKey: .compressionBitrateKbps) ?? 96
+        compressionForceMono = try container.decodeIfPresent(Bool.self, forKey: .compressionForceMono) ?? true
 
         if let behavior = try container.decodeIfPresent(AudioFileBehavior.self, forKey: .audioFileBehavior) {
             audioFileBehavior = behavior
@@ -367,7 +408,12 @@ struct WorkflowPolicy: Codable, Identifiable, Equatable {
         try container.encode(noteIncludesTitle, forKey: .noteIncludesTitle)
         try container.encode(useSpokenDateFromTranscript, forKey: .useSpokenDateFromTranscript)
         try container.encode(notePeriod, forKey: .notePeriod)
-        try container.encodeIfPresent(noteLinkStyle, forKey: .noteLinkStyle)
+        try container.encode(noteLinkStyle, forKey: .noteLinkStyle)
+        try container.encode(embedAudioInNote, forKey: .embedAudioInNote)
+        try container.encode(normalizeAudio, forKey: .normalizeAudio)
+        try container.encode(compressAudioOnExport, forKey: .compressAudioOnExport)
+        try container.encode(compressionBitrateKbps, forKey: .compressionBitrateKbps)
+        try container.encode(compressionForceMono, forKey: .compressionForceMono)
     }
 
     private static func migratedAudioFileBehavior(
@@ -559,9 +605,6 @@ struct AppSettings: Codable, Equatable {
     /// Existing users are unaffected — `init(from:)` below falls back to the old
     /// Obsidian iCloud path instead, if their settings.json is somehow missing this key.
     var vaultRootPath = ""
-    var voiceInboxRelativePath = "📮INBOX/📻 VOICE INBOX"
-    var journalAudioRelativePath = "🖋️ Journal/Audio"
-    var monthlyNotesRelativePath = "🖋️ Journal"
     var defaultWorkflow: String = StandardWorkflowID.obsidianJournal
     var workflows: [WorkflowPolicy] = WorkflowPolicy.freshInstallDefaults
     var maxTranscriptCharactersForAnalysis = 24000
@@ -572,11 +615,6 @@ struct AppSettings: Codable, Equatable {
     var jprWatchFolderPath = "\(NSHomeDirectory())/Library/Mobile Documents/iCloud~com~openplanetsoftware~just-press-record/Documents"
     var archiveRelativePath = "📦 Archive/Voice Memos"
     var importedAudioFingerprints: [String] = []
-    var compressAudioOnExport = false
-    var normalizeAudio = false
-    var compressionBitrateKbps = 96
-    var compressionForceMono = true
-    var usesObsidian = true
 
     enum CodingKeys: String, CodingKey {
         case macWhisperPath
@@ -584,9 +622,6 @@ struct AppSettings: Codable, Equatable {
         case lmStudioBaseURL
         case lmStudioModelID
         case vaultRootPath
-        case voiceInboxRelativePath
-        case journalAudioRelativePath
-        case monthlyNotesRelativePath
         case defaultWorkflow
         case workflows
         case maxTranscriptCharactersForAnalysis
@@ -597,17 +632,17 @@ struct AppSettings: Codable, Equatable {
         case jprWatchFolderPath
         case archiveRelativePath
         case importedAudioFingerprints
-        case compressAudioOnExport
-        case normalizeAudio = "normalizeAudioOnExport"
-        case compressionBitrateKbps
-        case compressionForceMono
-        case usesObsidian
     }
 
     /// No longer stored; kept only to migrate old settings files into the
     /// per-workflow setting of the same name.
     private enum LegacyCodingKeys: String, CodingKey {
         case useSpokenDateFromTranscript
+        case compressAudioOnExport
+        case normalizeAudio = "normalizeAudioOnExport"
+        case compressionBitrateKbps
+        case compressionForceMono
+        case usesObsidian
     }
 
     init() {}
@@ -620,9 +655,6 @@ struct AppSettings: Codable, Equatable {
         lmStudioModelID = try container.decodeIfPresent(String.self, forKey: .lmStudioModelID)
         vaultRootPath = try container.decodeIfPresent(String.self, forKey: .vaultRootPath)
             ?? "\(NSHomeDirectory())/Library/Mobile Documents/iCloud~md~obsidian/Documents/Notes"
-        voiceInboxRelativePath = try container.decodeIfPresent(String.self, forKey: .voiceInboxRelativePath) ?? voiceInboxRelativePath
-        journalAudioRelativePath = try container.decodeIfPresent(String.self, forKey: .journalAudioRelativePath) ?? journalAudioRelativePath
-        monthlyNotesRelativePath = try container.decodeIfPresent(String.self, forKey: .monthlyNotesRelativePath) ?? monthlyNotesRelativePath
         defaultWorkflow = WorkflowPolicy.canonicalID(
             try container.decodeIfPresent(String.self, forKey: .defaultWorkflow) ?? defaultWorkflow
         )
@@ -643,11 +675,6 @@ struct AppSettings: Codable, Equatable {
         jprWatchFolderPath = try container.decodeIfPresent(String.self, forKey: .jprWatchFolderPath) ?? jprWatchFolderPath
         archiveRelativePath = try container.decodeIfPresent(String.self, forKey: .archiveRelativePath) ?? archiveRelativePath
         importedAudioFingerprints = try container.decodeIfPresent([String].self, forKey: .importedAudioFingerprints) ?? []
-        compressAudioOnExport = try container.decodeIfPresent(Bool.self, forKey: .compressAudioOnExport) ?? false
-        normalizeAudio = try container.decodeIfPresent(Bool.self, forKey: .normalizeAudio) ?? false
-        compressionBitrateKbps = try container.decodeIfPresent(Int.self, forKey: .compressionBitrateKbps) ?? compressionBitrateKbps
-        compressionForceMono = try container.decodeIfPresent(Bool.self, forKey: .compressionForceMono) ?? compressionForceMono
-        usesObsidian = try container.decodeIfPresent(Bool.self, forKey: .usesObsidian) ?? true
         WorkflowPolicy.defaults.forEach { fallback in
             if !workflows.contains(where: { $0.id == fallback.id }) {
                 workflows.append(fallback)
@@ -658,6 +685,27 @@ struct AppSettings: Codable, Equatable {
             workflows = workflows.map { policy in
                 var migrated = policy
                 migrated.useSpokenDateFromTranscript = legacyUseSpokenDate
+                return migrated
+            }
+        }
+        let legacyNormalizeAudio = try legacyContainer.decodeIfPresent(Bool.self, forKey: .normalizeAudio)
+        let legacyCompressAudioOnExport = try legacyContainer.decodeIfPresent(Bool.self, forKey: .compressAudioOnExport)
+        let legacyCompressionBitrateKbps = try legacyContainer.decodeIfPresent(Int.self, forKey: .compressionBitrateKbps)
+        let legacyCompressionForceMono = try legacyContainer.decodeIfPresent(Bool.self, forKey: .compressionForceMono)
+        if legacyNormalizeAudio != nil || legacyCompressAudioOnExport != nil || legacyCompressionBitrateKbps != nil || legacyCompressionForceMono != nil {
+            workflows = workflows.map { policy in
+                var migrated = policy
+                if let legacyNormalizeAudio { migrated.normalizeAudio = legacyNormalizeAudio }
+                if let legacyCompressAudioOnExport { migrated.compressAudioOnExport = legacyCompressAudioOnExport }
+                if let legacyCompressionBitrateKbps { migrated.compressionBitrateKbps = legacyCompressionBitrateKbps }
+                if let legacyCompressionForceMono { migrated.compressionForceMono = legacyCompressionForceMono }
+                return migrated
+            }
+        }
+        if let legacyUsesObsidian = try legacyContainer.decodeIfPresent(Bool.self, forKey: .usesObsidian) {
+            workflows = workflows.map { policy in
+                var migrated = policy
+                migrated.noteLinkStyle = legacyUsesObsidian ? .wikilink : .markdown
                 return migrated
             }
         }

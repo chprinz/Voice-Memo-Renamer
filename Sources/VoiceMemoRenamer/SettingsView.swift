@@ -3,7 +3,6 @@ import SwiftUI
 enum SettingsTab: String, CaseIterable, Identifiable {
     case general
     case workflows
-    case audio
     case services
 
     var id: String { rawValue }
@@ -12,7 +11,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .general: "General"
         case .workflows: "Workflows"
-        case .audio: "Audio"
         case .services: "Services"
         }
     }
@@ -71,7 +69,6 @@ struct SettingsView: View {
                     switch tab {
                     case .general: generalSection
                     case .workflows: workflowsSection
-                    case .audio: audioSection
                     case .services: servicesSection
                     }
                 }
@@ -99,49 +96,8 @@ struct SettingsView: View {
                     }
                 }
                 .help("Used by watch folders, and preselected in the main window.")
-                Toggle("Obsidian-style notes", isOn: $store.settings.usesObsidian)
-                    .help("Embeds audio with Obsidian's ![[wikilink]] syntax instead of a standard <audio> tag, for workflows that don't set their own link style.")
-                FolderPathRow(
-                    title: store.settings.usesObsidian ? "Obsidian vault" : "Base folder",
-                    path: $store.settings.vaultRootPath
-                )
                 Toggle("Check watch folders at launch", isOn: $store.settings.checkWatchFoldersAtLaunch)
             }
-        }
-    }
-
-    private var audioSection: some View {
-        Group {
-            Section("Before transcribing") {
-                Toggle("Normalize (\u{2212}16 LUFS)", isOn: $store.settings.normalizeAudio)
-                    .help("Evens out level so quiet recordings transcribe better. Needs ffmpeg.")
-            }
-
-            Section("Exported audio") {
-                Toggle("Compress", isOn: $store.settings.compressAudioOnExport)
-                Picker("Bitrate", selection: $store.settings.compressionBitrateKbps) {
-                    ForEach(AudioCompressor.bitrateChoicesKbps, id: \.self) { bitrate in
-                        Text("\(bitrate) kbps").tag(bitrate)
-                    }
-                }
-                .disabled(!store.settings.compressAudioOnExport)
-                Picker("Channels", selection: $store.settings.compressionForceMono) {
-                    Text("Mono").tag(true)
-                    Text("Keep source").tag(false)
-                }
-                .disabled(!store.settings.compressAudioOnExport)
-                Text("Files smaller than the selected bitrate are not altered.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private func bitrateLabel(_ bitrate: Int) -> String {
-        switch bitrate {
-        case ...48: "\(bitrate) kbps — smallest file, lower quality"
-        case 96, 128: "\(bitrate) kbps — good for spoken word"
-        default: "\(bitrate) kbps — larger file, closer to source quality"
         }
     }
 
@@ -172,12 +128,7 @@ struct SettingsView: View {
             }
 
             if let binding = workflowBinding(for: selectedWorkflowID) {
-                WorkflowPolicyEditor(
-                    policy: binding,
-                    isDefault: store.settings.defaultWorkflow == selectedWorkflowID
-                ) {
-                    store.settings.defaultWorkflow = selectedWorkflowID
-                }
+                WorkflowPolicyEditor(policy: binding)
             }
         }
     }
@@ -496,15 +447,12 @@ struct SettingsView: View {
 
 struct WorkflowPolicyEditor: View {
     @Binding var policy: WorkflowPolicy
-    var isDefault: Bool
-    var makeDefault: () -> Void
 
     var body: some View {
         Group {
             Section("Source") {
                 TextField("Name", text: $policy.name)
                 Toggle("Enabled", isOn: $policy.isEnabled)
-                Toggle("Use as default", isOn: defaultBinding)
                 Picker("Recordings come from", selection: $policy.sourceBehavior) {
                     ForEach(SourceBehavior.allCases) { behavior in
                         Text(behavior.label).tag(behavior)
@@ -516,7 +464,23 @@ struct WorkflowPolicyEditor: View {
                 }
             }
 
-            Section("Output") {
+            Section("Analysis") {
+                Toggle("Analyze with LM Studio", isOn: $policy.usesSmartAnalysis)
+                    .help("Writes the title, summary and filename slug from what was said. Off is much faster.")
+                Toggle("Use a date spoken in the recording", isOn: $policy.useSpokenDateFromTranscript)
+                    .help("Copying or syncing a recording often resets its file date. A spoken date, when present, overrides it.")
+                    .disabled(!policy.usesSmartAnalysis)
+                if policy.transcriptBehavior != .doNotExportTranscript {
+                    Picker("Summary in the note", selection: $policy.summaryStyle) {
+                        ForEach(SummaryStyle.allCases) { style in
+                            Text(style.label).tag(style)
+                        }
+                    }
+                    .disabled(!policy.usesSmartAnalysis)
+                }
+            }
+
+            Section("Note") {
                 Picker("Note", selection: $policy.transcriptBehavior) {
                     ForEach(visibleTranscriptBehaviors) { behavior in
                         Text(behavior.label).tag(behavior)
@@ -531,8 +495,25 @@ struct WorkflowPolicyEditor: View {
                 }
                 if policy.transcriptBehavior != .doNotExportTranscript {
                     FolderPathRow(title: noteFolderTitle, path: $policy.destinationPath)
+                    Toggle("Title line in the note", isOn: $policy.noteIncludesTitle)
+                    Toggle("Embed audio in note", isOn: $policy.embedAudioInNote)
+                    if policy.embedAudioInNote {
+                        if policy.audioFileBehavior == .copyToFolder || policy.audioFileBehavior == .moveToFolder {
+                            Picker("Embed as", selection: $policy.noteLinkStyle) {
+                                ForEach(NoteLinkStyle.allCases) { style in
+                                    Text(style.label).tag(style)
+                                }
+                            }
+                        } else {
+                            Text("Linked by its file path \u{2014} copy or move the audio below to use an Obsidian wikilink instead.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
+            }
 
+            Section("Audio file") {
                 Picker("Audio", selection: $policy.audioFileBehavior) {
                     ForEach(AudioFileBehavior.allCases) { behavior in
                         Text(behavior.label).tag(behavior)
@@ -541,38 +522,41 @@ struct WorkflowPolicyEditor: View {
                 if policy.audioFileBehavior == .copyToFolder || policy.audioFileBehavior == .moveToFolder {
                     FolderPathRow(title: "Audio folder", path: $policy.audioDestinationPath)
                 }
-            }
-
-            Section("Review & analysis") {
-                Picker("Review before import", selection: $policy.reviewBehavior) {
-                    ForEach(ReviewBehavior.allCases) { behavior in
-                        Text(behavior.label).tag(behavior)
+                Toggle("Normalize (\u{2212}16 LUFS)", isOn: $policy.normalizeAudio)
+                    .help("Evens out level so quiet recordings transcribe better. Needs ffmpeg.")
+                Toggle("Compress on export", isOn: $policy.compressAudioOnExport)
+                Picker("Bitrate", selection: $policy.compressionBitrateKbps) {
+                    ForEach(AudioCompressor.bitrateChoicesKbps, id: \.self) { bitrate in
+                        Text("\(bitrate) kbps").tag(bitrate)
                     }
                 }
-                Toggle("Analyze with LM Studio", isOn: $policy.usesSmartAnalysis)
-                    .help("Writes the title, summary and filename slug from what was said. Off is much faster.")
-                Toggle("Use a date spoken in the recording", isOn: $policy.useSpokenDateFromTranscript)
-                    .help("Copying or syncing a recording often resets its file date. A spoken date, when present, overrides it.")
-                if policy.transcriptBehavior != .doNotExportTranscript {
-                    Toggle("Title line in the note", isOn: $policy.noteIncludesTitle)
-                    Picker("Summary in the note", selection: $policy.summaryStyle) {
-                        ForEach(SummaryStyle.allCases) { style in
-                            Text(style.label).tag(style)
-                        }
-                    }
-                    .disabled(!policy.usesSmartAnalysis)
+                .disabled(!policy.compressAudioOnExport)
+                if policy.compressAudioOnExport {
+                    Text("Files smaller than the selected bitrate are not altered.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
+                Picker("Channels", selection: $policy.compressionForceMono) {
+                    Text("Mono").tag(true)
+                    Text("Keep source").tag(false)
+                }
+                .disabled(!policy.compressAudioOnExport)
             }
 
-            Section("Filename") {
+            Section("Filenames") {
                 TextField("Pattern", text: $policy.filenamePattern)
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: Space.xs) {
                         Text(FilenamePattern.preview(pattern: policy.filenamePattern, workflowName: policy.name))
                             .font(.caption.monospaced())
                             .foregroundStyle(.secondary)
-                        if !policy.usesSmartAnalysis, FilenamePattern.requiresAnalysis(pattern: policy.filenamePattern) {
-                            Text("This pattern needs analysis. Use {filename} or {date} instead.")
+                            .opacity(patternIsUnused || patternNeedsAnalysis ? 0.5 : 1)
+                        if patternIsUnused {
+                            Text("Not used \u{2014} this workflow doesn't write a separate note or rename audio.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else if patternNeedsAnalysis {
+                            Text("LM Studio is off, so {title} and {slug} fall back to the plain filename.")
                                 .font(.caption)
                                 .foregroundStyle(.orange)
                         }
@@ -580,11 +564,26 @@ struct WorkflowPolicyEditor: View {
                     Spacer()
                     PopoverHelp()
                 }
-                Text("With analysis off, {slug} and {title} have nothing to fill them \u{2014} build the pattern from {filename} and {date} instead.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            }
+
+            Section("Review") {
+                Picker("Review before import", selection: $policy.reviewBehavior) {
+                    ForEach(ReviewBehavior.allCases) { behavior in
+                        Text(behavior.label).tag(behavior)
+                    }
+                }
             }
         }
+    }
+
+    private var patternNeedsAnalysis: Bool {
+        !policy.usesSmartAnalysis && FilenamePattern.requiresAnalysis(pattern: policy.filenamePattern)
+    }
+
+    private var patternIsUnused: Bool {
+        let noteUsesPattern = policy.transcriptBehavior == .createMarkdownFile || policy.transcriptBehavior == .saveTranscriptOnly
+        let audioUsesPattern = policy.audioFileBehavior != .leaveInPlace
+        return !noteUsesPattern && !audioUsesPattern
     }
 
     private var visibleTranscriptBehaviors: [TranscriptBehavior] {
@@ -596,16 +595,6 @@ struct WorkflowPolicyEditor: View {
         case .appendToMonthlyNote: "\(policy.notePeriod.label) note folder"
         case .createMarkdownFile, .saveTranscriptOnly: "Note folder"
         case .doNotExportTranscript: "Note folder"
-        }
-    }
-
-    private var defaultBinding: Binding<Bool> {
-        Binding {
-            isDefault
-        } set: { isOn in
-            if isOn {
-                makeDefault()
-            }
         }
     }
 }

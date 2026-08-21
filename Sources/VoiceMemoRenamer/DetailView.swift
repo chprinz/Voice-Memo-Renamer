@@ -260,34 +260,36 @@ struct ImportDetailView: View {
                 filedNotice
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Summary")
-                    .font(.headline)
-                if let points = item.analysis?.summaryPoints, !points.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(points, id: \.self) { point in
-                            Text("• \(point)")
-                                .font(.body)
-                                .textSelection(.enabled)
+            if !summaryIsDisabledForWorkflow || hasSummaryContent {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Summary")
+                        .font(.headline)
+                    if let points = item.analysis?.summaryPoints, !points.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(points, id: \.self) { point in
+                                Text("• \(point)")
+                                    .font(.body)
+                                    .textSelection(.enabled)
+                            }
                         }
                     }
-                }
-                if isEditable {
-                    TextEditor(text: $summaryDraft)
-                        .font(.body)
-                        .frame(minHeight: 60, maxHeight: 120)
-                        .padding(6)
-                        .background(Color(nsColor: .controlBackgroundColor))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 6)
-                                .strokeBorder(Color(nsColor: .separatorColor))
-                        }
-                } else {
-                    Text(item.analysis?.summary.nilIfBlank ?? placeholderText)
-                        .font(.body)
-                        .foregroundStyle(item.analysis?.summary.nilIfBlank == nil ? .secondary : .primary)
-                        .textSelection(.enabled)
+                    if isEditable {
+                        TextEditor(text: $summaryDraft)
+                            .font(.body)
+                            .frame(minHeight: 60, maxHeight: 120)
+                            .padding(6)
+                            .background(Color(nsColor: .controlBackgroundColor))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 6)
+                                    .strokeBorder(Color(nsColor: .separatorColor))
+                            }
+                    } else {
+                        Text(item.analysis?.summary.nilIfBlank ?? placeholderText)
+                            .font(.body)
+                            .foregroundStyle(item.analysis?.summary.nilIfBlank == nil ? .secondary : .primary)
+                            .textSelection(.enabled)
+                    }
                 }
             }
 
@@ -311,9 +313,6 @@ struct ImportDetailView: View {
                         }
                     }
                 }
-                Text(item.recordingDateSource.label)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
             if let themes = item.analysis?.themes, !themes.isEmpty {
@@ -591,6 +590,15 @@ struct ImportDetailView: View {
             updated.recordingDateSource = .manual
             store.update(updated)
         }
+    }
+
+    private var summaryIsDisabledForWorkflow: Bool {
+        let policy = store.workflowPolicy(for: item.workflow)
+        return !policy.usesSmartAnalysis || policy.summaryStyle == .none
+    }
+
+    private var hasSummaryContent: Bool {
+        item.analysis?.summaryPoints?.isEmpty == false || item.analysis?.summary.nilIfBlank != nil
     }
 
     private var placeholderText: String {
