@@ -102,6 +102,7 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             serviceBanner
+            pendingImports
             importNotices
             importDropZone
             Divider()
@@ -435,6 +436,28 @@ struct ContentView: View {
             .padding(.vertical, Space.m)
             .background(Color.red.opacity(0.08))
             .overlay(alignment: .bottom) { Divider() }
+        }
+    }
+
+    @ViewBuilder
+    private var pendingImports: some View {
+        if !store.pendingImports.isEmpty {
+            VStack(alignment: .leading, spacing: Space.s) {
+                ForEach(store.pendingImports) { pending in
+                    HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Importing \(pending.filename)\u{2026}")
+                            .font(.caption.weight(.medium))
+                        Spacer()
+                    }
+                    .padding(.horizontal, Space.m)
+                    .padding(.vertical, Space.s)
+                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+                }
+            }
+            .padding(.horizontal, Space.xl)
+            .padding(.top, Space.m)
         }
     }
 
@@ -783,19 +806,40 @@ struct ContentView: View {
     }
 
     private func importDroppedProvider(_ provider: NSItemProvider) {
+        // For a plain Finder file this is essentially free, but for audio handed over by
+        // another app (e.g. a wireless mic's companion app) as a "promised" item, resolving
+        // it below is itself the slow part — often before `addItem` even starts its own
+        // copy — so the spinner has to cover this step too, not just the one inside addItem.
+        let pendingID = UUID()
+        Task { @MainActor in
+            store.pendingImports.append(PendingImport(id: pendingID, filename: provider.suggestedName ?? "recording"))
+        }
+        func endPending() {
+            Task { @MainActor in
+                store.pendingImports.removeAll { $0.id == pendingID }
+            }
+        }
+
         if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
             provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, error in
-                guard error == nil, let url = fileURL(from: item) else { return }
-                importAudioFile(url)
+                guard error == nil, let url = fileURL(from: item) else {
+                    endPending()
+                    return
+                }
+                importAudioFile(url, endingPending: pendingID)
             }
             return
         }
 
         guard let type = supportedTypes.first(where: { provider.hasItemConformingToTypeIdentifier($0.identifier) }) else {
+            endPending()
             return
         }
         provider.loadFileRepresentation(forTypeIdentifier: type.identifier) { temporaryURL, error in
-            guard error == nil, let temporaryURL else { return }
+            guard error == nil, let temporaryURL else {
+                endPending()
+                return
+            }
             let fallbackExtension = temporaryURL.pathExtension.isEmpty ? "m4a" : temporaryURL.pathExtension
             let filename = FileNaming.filename(
                 preferredName: provider.suggestedName,
@@ -806,15 +850,18 @@ struct ContentView: View {
             do {
                 try FileManager.default.createDirectory(at: AppPaths.dropImportDirectory, withIntermediateDirectories: true)
                 try FileManager.default.copyItem(at: temporaryURL, to: destinationURL)
-                importAudioFile(destinationURL)
+                importAudioFile(destinationURL, endingPending: pendingID)
             } catch {
-                return
+                endPending()
             }
         }
     }
 
-    private func importAudioFile(_ url: URL, allowDuplicate: Bool = false) {
+    private func importAudioFile(_ url: URL, allowDuplicate: Bool = false, endingPending pendingID: UUID? = nil) {
         Task { @MainActor in
+            if let pendingID {
+                store.pendingImports.removeAll { $0.id == pendingID }
+            }
             if let imported = await store.addItem(from: url, allowDuplicate: allowDuplicate, workflowOverride: sessionWorkflow) {
                 mode = .current
                 filter = .all

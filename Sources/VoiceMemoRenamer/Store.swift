@@ -16,9 +16,18 @@ struct ImportNotice: Identifiable, Equatable {
     var message: String
 }
 
+/// A file currently being copied into managed storage. Large field recordings can take
+/// a while to copy, and the item doesn't exist in `items` until that finishes, so without
+/// this the app looks like it silently ignored the drop or file-picker selection.
+struct PendingImport: Identifiable, Equatable {
+    var id = UUID()
+    var filename: String
+}
+
 @MainActor
 final class ImportStore: ObservableObject {
     @Published var importNotices: [ImportNotice] = []
+    @Published var pendingImports: [PendingImport] = []
 
     @Published var items: [ImportItem] = [] {
         didSet { saveItems() }
@@ -81,6 +90,13 @@ final class ImportStore: ObservableObject {
             noteSkippedImport(sourceURL, kind: .duplicate, message: "This file was imported before.")
             return nil
         }
+
+        // Copying and hashing can take a while on a large field recording — long enough that,
+        // without this, the file picker or drop just looks like it did nothing until the item
+        // finally appears in the queue.
+        let pendingImportID = UUID()
+        pendingImports.append(PendingImport(id: pendingImportID, filename: sourceURL.lastPathComponent))
+        defer { pendingImports.removeAll { $0.id == pendingImportID } }
 
         var managedAudioURL: URL?
         var importError: ProcessingError?
