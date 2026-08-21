@@ -29,6 +29,7 @@ struct SettingsView: View {
     @State private var isLoadingModels = false
     @State private var loadedContextTokens: Int?
     @State private var maxContextTokens: Int?
+    @State private var contextTokensAreLive = false
     @State private var storageBytes: Int64?
     @State private var tab: SettingsTab = .general
 
@@ -199,11 +200,11 @@ struct SettingsView: View {
                         .frame(width: 110)
                     Text("characters")
                         .foregroundStyle(.secondary)
-                    if loadedContextTokens != nil {
-                        Button("Safe Limit") { applySafeTranscriptLimit() }
-                    }
                 }
                 Slider(value: transcriptLimitBinding, in: 6000...transcriptSliderUpperBound, step: 1000)
+                Text(transcriptLimitSpokenLengthText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Text(contextSummary)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -266,6 +267,7 @@ struct SettingsView: View {
             store.settings.lmStudioModelID ?? ""
         } set: { value in
             store.settings.lmStudioModelID = value.isEmpty ? nil : value
+            refreshModels()
         }
     }
 
@@ -279,29 +281,47 @@ struct SettingsView: View {
 
     private var contextSummary: String {
         guard let loadedContextTokens else {
-            return "Refresh models to read the loaded context window from LM Studio."
+            return "Refresh models to read the selected model's context window from LM Studio."
         }
-        var text = "Loaded context: \(loadedContextTokens.formatted()) tokens"
-        if let maxContextTokens {
-            text += ", max supported: \(maxContextTokens.formatted()) tokens"
+        if contextTokensAreLive {
+            var text = "Loaded context: \(loadedContextTokens.formatted()) tokens"
+            if let maxContextTokens {
+                text += ", max supported: \(maxContextTokens.formatted()) tokens"
+            }
+            return text
         }
-        return text
+        return "Not loaded yet \u{2014} using its max context of \(loadedContextTokens.formatted()) tokens as an estimate."
+    }
+
+    /// Deliberately conservative (i.e. assumes dense speech) so this reads as a floor,
+    /// not a promise: a 1-hour talking-head transcript commonly runs 50-60k characters,
+    /// closer to ~165 wpm than a slow dictation pace, so lowballing minutes here is safer
+    /// than telling someone they have more room than the transcript limit actually allows.
+    private var transcriptLimitSpokenLengthText: String {
+        let charactersPerMinute = 1000
+        let totalMinutes = max(1, store.settings.maxTranscriptCharactersForAnalysis / charactersPerMinute)
+        let hours = totalMinutes / 60
+        let minutes = totalMinutes % 60
+        let duration: String
+        if hours > 0 {
+            duration = minutes > 0 ? "\(hours)h \(minutes)m" : "\(hours)h"
+        } else {
+            duration = "\(minutes) minute\(minutes == 1 ? "" : "s")"
+        }
+        return "About \(duration) of recording."
     }
 
     private var transcriptSliderUpperBound: Double {
+        // Must stay above the slider's 6000 lower bound — an equal bound gives SwiftUI
+        // a zero-width range, which crashes with "max stride must be positive". A tiny
+        // context model (e.g. an embedding model) can compute a safe limit of exactly 6000.
         guard let safeTranscriptCharacterLimit else { return 80000 }
-        return Double(max(6000, safeTranscriptCharacterLimit))
+        return Double(max(7000, safeTranscriptCharacterLimit))
     }
 
     private var safeTranscriptCharacterLimit: Int? {
         guard let loadedContextTokens else { return nil }
         return safeTranscriptCharacterLimit(for: loadedContextTokens)
-    }
-
-    private func applySafeTranscriptLimit() {
-        if let safeTranscriptCharacterLimit {
-            store.settings.maxTranscriptCharactersForAnalysis = safeTranscriptCharacterLimit
-        }
     }
 
     private func safeTranscriptCharacterLimit(for contextTokens: Int) -> Int {
@@ -373,29 +393,40 @@ struct SettingsView: View {
         lmStudioStatus = "Loading models..."
         Task {
             do {
-                let requestURL = url.appendingPathComponent("models")
+                // The native endpoint reports loaded_instances and each model's type,
+                // which the OpenAI-compatible /v1/models endpoint can't (see the same
+                // note in SetupWizardView) — one request covers the picker list,
+                // filtering out embedding models, and the selected model's context info.
+                let nativeBaseURL = lmStudioNativeBaseURL(from: url)
+                let requestURL = nativeBaseURL.appendingPathComponent("models")
                 let (data, _) = try await URLSession.shared.data(from: requestURL)
-                let response = try JSONDecoder().decode(SettingsModelsResponse.self, from: data)
-                let contextInfo = try? await fetchLoadedContextInfo(baseURL: url, preferredModelID: store.settings.lmStudioModelID)
+                let response = try JSONDecoder().decode(LMStudioNativeModelsResponse.self, from: data)
+                let chatModels = response.models.filter { $0.type != "embedding" }
+                let contextInfo = contextInfo(for: store.settings.lmStudioModelID, in: chatModels)
                 await MainActor.run {
-                    lmStudioModels = response.data.map(\.id)
-                    loadedContextTokens = contextInfo?.loadedContextTokens
+                    lmStudioModels = chatModels.map(\.key)
+                    loadedContextTokens = contextInfo?.contextTokens
                     maxContextTokens = contextInfo?.maxContextTokens
+                    contextTokensAreLive = contextInfo?.isLoaded ?? false
                     if lmStudioModels.isEmpty {
-                        // Don't clear the preference here: with no model loaded, this
-                        // is exactly the id LMStudioService.modelKeyToLoad() needs to
-                        // know which model to load automatically on the next import.
-                        loadedContextTokens = nil
-                        maxContextTokens = nil
-                        lmStudioStatus = "No model is loaded in LM Studio."
+                        lmStudioStatus = "LM Studio has no downloaded models."
                     } else if let selected = store.settings.lmStudioModelID, !lmStudioModels.contains(selected) {
+                        // Don't clear the preference when nothing is loaded yet: this is
+                        // exactly the id LMStudioService.modelKeyToLoad() needs to know
+                        // which model to load automatically on the next import.
                         store.settings.lmStudioModelID = nil
-                        lmStudioStatus = "Selected model is no longer loaded. Using first loaded model."
+                        lmStudioStatus = "Selected model is no longer available. Using first loaded model."
+                    } else if let contextInfo, !contextInfo.isLoaded {
+                        lmStudioStatus = "Not loaded yet \u{2014} loads automatically when needed."
+                    } else if contextInfo != nil {
+                        lmStudioStatus = "Connected."
                     } else {
-                        lmStudioStatus = contextInfo == nil ? "\(lmStudioModels.count) loaded model(s)." : "Connected."
+                        lmStudioStatus = "No model is loaded in LM Studio."
                     }
-                    if let safeTranscriptCharacterLimit,
-                       store.settings.maxTranscriptCharactersForAnalysis > safeTranscriptCharacterLimit {
+                    // Always sync to the currently loaded model's safe limit, so switching
+                    // models (or reloading a bigger/smaller one) keeps this correct without
+                    // a separate manual step.
+                    if let safeTranscriptCharacterLimit {
                         store.settings.maxTranscriptCharactersForAnalysis = safeTranscriptCharacterLimit
                     }
                     isLoadingModels = false
@@ -412,23 +443,37 @@ struct SettingsView: View {
         }
     }
 
-    private func fetchLoadedContextInfo(baseURL: URL, preferredModelID: String?) async throws -> LoadedContextInfo? {
-        let nativeBaseURL = lmStudioNativeBaseURL(from: baseURL)
-        let requestURL = nativeBaseURL.appendingPathComponent("models")
-        let (data, _) = try await URLSession.shared.data(from: requestURL)
-        let response = try JSONDecoder().decode(LMStudioNativeModelsResponse.self, from: data)
-        let loadedModels = response.models.filter { !$0.loadedInstances.isEmpty }
-        let selectedModel = loadedModels.first { model in
-            model.key == preferredModelID || model.loadedInstances.contains { $0.id == preferredModelID }
-        } ?? loadedModels.first
-
-        guard let selectedModel, let instance = selectedModel.loadedInstances.first else {
-            return nil
+    /// Looks up context info for the *selected* model, not just whichever model
+    /// LM Studio happens to have loaded right now — otherwise switching the picker
+    /// to an unloaded model silently falls back to whatever was already loaded.
+    private func contextInfo(
+        for preferredModelID: String?,
+        in models: [LMStudioNativeModelsResponse.Model]
+    ) -> LoadedContextInfo? {
+        let selectedModel: LMStudioNativeModelsResponse.Model?
+        if let preferredModelID, !preferredModelID.isEmpty {
+            selectedModel = models.first { model in
+                model.key == preferredModelID || model.loadedInstances.contains { $0.id == preferredModelID }
+            }
+        } else {
+            selectedModel = models.first { !$0.loadedInstances.isEmpty }
         }
 
+        guard let selectedModel else { return nil }
+
+        if let instance = selectedModel.loadedInstances.first {
+            return LoadedContextInfo(
+                contextTokens: instance.config.contextLength,
+                maxContextTokens: selectedModel.maxContextLength,
+                isLoaded: true
+            )
+        }
+        // Not loaded yet: fall back to its max context as an estimate. LM Studio
+        // loads it automatically on first use (LMStudioService.modelKeyToLoad()).
         return LoadedContextInfo(
-            loadedContextTokens: instance.config.contextLength,
-            maxContextTokens: selectedModel.maxContextLength
+            contextTokens: selectedModel.maxContextLength,
+            maxContextTokens: selectedModel.maxContextLength,
+            isLoaded: false
         )
     }
 
@@ -663,12 +708,8 @@ struct PopoverHelp: View {
     }
 }
 
-private struct SettingsModelsResponse: Decodable {
-    struct Model: Decodable { var id: String }
-    var data: [Model]
-}
-
 private struct LoadedContextInfo {
-    var loadedContextTokens: Int
+    var contextTokens: Int
     var maxContextTokens: Int
+    var isLoaded: Bool
 }

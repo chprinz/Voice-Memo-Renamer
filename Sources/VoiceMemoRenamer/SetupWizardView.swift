@@ -307,6 +307,7 @@ private struct SetupTranscriptionStepView: View {
 private struct SetupAnalysisStepView: View {
     @EnvironmentObject private var store: ImportStore
     @Binding var state: ConnectivityState
+    @State private var availableModelKeys: [String] = []
 
     var body: some View {
         SetupStepScaffold(
@@ -325,8 +326,24 @@ private struct SetupAnalysisStepView: View {
                 onCheck: { Task { await check() } },
                 actions: [("Open LM Studio", openLMStudio), ("Get LM Studio", openLMStudioPage)]
             )
+            if !availableModelKeys.isEmpty {
+                Picker("Model", selection: modelSelectionBinding) {
+                    Text("First loaded model").tag("")
+                    ForEach(availableModelKeys, id: \.self) { key in
+                        Text(key).tag(key)
+                    }
+                }
+            }
         }
         .task { await check() }
+    }
+
+    private var modelSelectionBinding: Binding<String> {
+        Binding {
+            store.settings.lmStudioModelID ?? ""
+        } set: { value in
+            store.settings.lmStudioModelID = value.isEmpty ? nil : value
+        }
     }
 
     @MainActor
@@ -334,6 +351,7 @@ private struct SetupAnalysisStepView: View {
         state = .checking
         guard let baseURL = URL(string: store.settings.lmStudioBaseURL), baseURL.scheme != nil, baseURL.host != nil else {
             state = .unavailable("This isn't a valid address.")
+            availableModelKeys = []
             return
         }
         do {
@@ -347,10 +365,12 @@ private struct SetupAnalysisStepView: View {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
                 state = .unavailable("LM Studio answered, but not with a model list.")
+                availableModelKeys = []
                 return
             }
             let decoded = try? JSONDecoder().decode(LMStudioNativeModelsResponse.self, from: data)
             let models = decoded?.models ?? []
+            availableModelKeys = models.filter { $0.type != "embedding" }.map(\.key)
             if models.contains(where: { !$0.loadedInstances.isEmpty }) {
                 state = .ok
             } else if !models.isEmpty {
@@ -360,6 +380,7 @@ private struct SetupAnalysisStepView: View {
             }
         } catch {
             state = .unavailable("Can't reach LM Studio. Install it, download a model, and start its local server.")
+            availableModelKeys = []
         }
     }
 

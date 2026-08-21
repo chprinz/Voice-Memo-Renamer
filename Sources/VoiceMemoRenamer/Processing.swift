@@ -1578,11 +1578,13 @@ struct LMStudioNativeModelsResponse: Decodable {
         }
 
         var key: String
+        var type: String?
         var loadedInstances: [LoadedInstance]
         var maxContextLength: Int
 
         enum CodingKeys: String, CodingKey {
             case key
+            case type
             case loadedInstances = "loaded_instances"
             case maxContextLength = "max_context_length"
         }
