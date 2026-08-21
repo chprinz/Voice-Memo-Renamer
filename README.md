@@ -21,7 +21,7 @@ A simple voice memo transcription app for macOS that creates or appends Markdown
 4. Pick a folder for the default **Journal** workflow's notes and audio in Settings → Workflows (or skip this — see below).
 5. Drag an audio file onto the app and watch it get transcribed, analyzed, and imported.
 
-Nothing is pre-filled with a personal folder or a specific notes app. Until you choose a folder for a workflow, its note and any copied audio are simply written next to the recording's own source file. Whether notes use Obsidian's `![[wikilink]]` audio embeds or a plain `<audio>` tag that works in any Markdown app is controlled by **Obsidian-style notes** in Settings → General (on by default — see [Choosing Where Notes Go](#choosing-where-notes-go) below).
+Nothing is pre-filled with a personal folder or a specific notes app. Until you choose a folder for a workflow, its note and any copied audio are simply written next to the recording's own source file. Whether a workflow's note embeds audio with Obsidian's `![[wikilink]]` syntax or a plain `<audio>` tag that works in any Markdown app is set per workflow in Settings → Workflows (see [Choosing Where Notes Go](#choosing-where-notes-go) below).
 
 ## What It Does
 
@@ -66,13 +66,13 @@ The app does not intentionally send audio or transcripts to a cloud service. If 
 
 Three workflow presets ship out of the box:
 
-- **Journal** — appends to one shared note on a cadence you set (Settings → Workflows → Output → Cadence: Daily, Weekly, or Monthly). This is the default workflow.
+- **Journal** — appends to one shared note on a cadence you set (Settings → Workflows → Note → Cadence: Daily, Weekly, or Monthly). This is the default workflow.
 - **Note per Recording** — writes a separate `.md` file for each import.
 - **Rename Audio Only** — no note at all, just a renamed audio file.
 
-None of them come with a folder pre-selected. Until you pick one (Settings → Workflows → the folder row under Output), a workflow's note — and any audio it copies or moves — is written right next to the original recording's own file. That's a safe, zero-configuration default, not a bug: point a workflow at a real folder once you know where you actually want that kind of note to live.
+None of them come with a folder pre-selected. Until you pick one (Settings → Workflows → the folder row under Note or Audio file), a workflow's note — and any audio it copies or moves — is written right next to the original recording's own file. That's a safe, zero-configuration default, not a bug: point a workflow at a real folder once you know where you actually want that kind of note to live.
 
-**Obsidian-style notes** (Settings → General) is a single global switch: on, audio is embedded with Obsidian's `![[wikilink]]` syntax, which Obsidian and Logseq render as an inline player; off, the same embed becomes a plain `<audio controls>` tag, which most Markdown apps render as a player too, and which degrades to visible-but-harmless text in the few that don't render embedded HTML. It's on by default. A workflow can also be given its own link style independent of the global switch, if you ever need one workflow to differ from the rest — that's not exposed in the UI, only in a workflow's saved settings.
+**Embed audio in note** (Settings → Workflows → Note) is a per-workflow switch. On, the audio is referenced in the note; off, the note has no audio reference at all. When it's on and the workflow copies or moves the audio into the note's folder, an **Embed as** picker chooses the syntax: Obsidian's `![[wikilink]]`, which Obsidian and Logseq render as an inline player, or a plain `<audio controls>` tag, which most Markdown apps render as a player too and degrades to visible-but-harmless text in the few that don't render embedded HTML. If the workflow leaves the audio where it is instead of copying it, there's no same-folder filename to link to, so the note references the recording by its actual file path instead — that always works, regardless of where the file lives, but only as a plain `<audio>` tag (a wikilink can't reliably find a file outside the vault).
 
 </details>
 
@@ -81,7 +81,7 @@ None of them come with a folder pre-selected. Until you pick one (Settings → W
 
 Some recordings already carry their subject in the filename, and running them through
 LM Studio only produces a worse name than the one you typed yourself. Each workflow
-therefore has an **Analyze with LM Studio** switch under Settings → Workflows → Review & analysis.
+therefore has an **Analyze with LM Studio** switch under Settings → Workflows → Analysis.
 
 With it off, the workflow transcribes and stops there. The title, slug, and filename
 all come from the original filename, so importing takes as long as transcription and
@@ -135,7 +135,7 @@ copy.
 <summary><strong>Dates Spoken In The Recording</strong></summary>
 
 File timestamps are frequently wrong, because copying or syncing a recording rewrites
-them. When Settings → General has **Use a date spoken in the recording** enabled, a
+them. When a workflow has **Use a date spoken in the recording** enabled (Settings → Workflows → Analysis), a
 date stated at the very beginning or end of a memo takes priority over the file's own
 date. Only explicitly written out dates count (`14.08.2026`, `14. August 2026`,
 `2026-08-14`, `August 14, 2026`), optionally with a clock time next to them.
@@ -148,10 +148,10 @@ can always overrule it there.
 <details>
 <summary><strong>Audio Processing Options</strong></summary>
 
-Both live under Settings → Audio: **Normalize** and **Compress**. They're global — not per-workflow — since whether a file needs processing depends on the source audio, not the destination. They apply whenever the workflow handling an import actually produces an export copy (audio file behavior "Copy audio to folder" or "Move audio to folder"); workflows that leave audio in place or rename in place are unaffected. The original source file is never modified — only the exported copy is affected.
+Both live per workflow, under Settings → Workflows → Audio file: **Normalize** and **Compress**. They're per-workflow rather than global so one workflow (say, a noisy watch folder fed by a wireless lav mic) can normalize aggressively while another (clean manual recordings) leaves audio untouched. They apply whenever that workflow actually produces an export copy (audio file behavior "Copy audio to folder" or "Move audio to folder"); a workflow that leaves audio in place or renames in place is unaffected. The original source file is never modified — only the exported copy is affected.
 
 - **Normalize (-16 LUFS)**: two-pass EBU R128 loudness normalization (`ffmpeg`'s `loudnorm` filter, target -16 LUFS / -1.5 dBTP / LRA 11) at the source's own sample rate. It runs **before transcription**, because a quiet recording is harder for MacWhisper to read, and the same normalized copy is then reused for the exported audio — `loudnorm` never runs twice. Useful for recorders (e.g. wireless lav mics) whose raw levels vary a lot. Requires `ffmpeg`; its path is configurable under Settings → Services and defaults to `/opt/homebrew/bin/ffmpeg`, and with normalization on, a missing `ffmpeg` stops the import before transcription rather than after it.
-- **Compress**: runs at export only, on the exported copy. Re-encodes the exported copy to AAC/M4A at the source sample rate, via the built-in `afconvert`. Bitrate (32–256 kbps) and mono vs. source channels are set alongside it under Settings → Audio. M4A sources that are already below twice the target bitrate are left untouched to avoid a quality-losing second encode.
+- **Compress**: runs at export only, on the exported copy. Re-encodes the exported copy to AAC/M4A at the source sample rate, via the built-in `afconvert`. Bitrate (32–256 kbps) and mono vs. source channels are set alongside it, in the same Audio file section. M4A sources that are already below twice the target bitrate are left untouched to avoid a quality-losing second encode.
 
 So the full order is: normalize → transcribe → analyze → review → compress → export. The
 normalized copy lives in the processing cache and is deleted once the import succeeds.
@@ -190,10 +190,10 @@ open -n .build/VoiceMemoRenamer.app
 To build a release app and package it as a DMG:
 
 ```bash
-Scripts/build-dmg.sh 1.5.0
+Scripts/build-dmg.sh 1.6.0
 ```
 
-The DMG is written to `dist/VoiceMemoRenamer-1.5.0.dmg`. This script uses ad-hoc signing for local distribution. For broader public distribution, use a Developer ID certificate and notarization.
+The DMG is written to `dist/VoiceMemoRenamer-1.6.0.dmg`. This script uses ad-hoc signing for local distribution. For broader public distribution, use a Developer ID certificate and notarization.
 
 **Requirements:** Xcode app toolchain for building from source, in addition to the runtime requirements above.
 
@@ -201,7 +201,7 @@ The DMG is written to `dist/VoiceMemoRenamer-1.5.0.dmg`. This script uses ad-hoc
 
 ## About This Project
 
-Version `1.5.0`. First public release was `1.0.0`.
+Version `1.6.0`. First public release was `1.0.0`.
 
 I built this for my own voice-note workflow — recording quick thoughts and getting them into Obsidian with a good filename, a transcript, and a short summary. It's not a general-purpose transcription product; it's a personal workflow app made public because it may be useful to others with a similar local-first setup, or as a starting point for their own version.
 
