@@ -786,6 +786,19 @@ enum FilenamePattern {
         analysisPlaceholders.contains { pattern.contains($0) }
     }
 
+    /// Same as `render`, except a user-typed `filenameOverride` on the item wins
+    /// outright instead of feeding into the pattern.
+    static func resolve(pattern: String, item: ImportItem, workflowName: String, includeExtension: Bool = true) -> String {
+        guard let override = item.filenameOverride?.nilIfBlank else {
+            return render(pattern: pattern, item: item, workflowName: workflowName, includeExtension: includeExtension)
+        }
+        let extensionValue = URL(fileURLWithPath: item.originalFilename).pathExtension.isEmpty ? "m4a" : URL(fileURLWithPath: item.originalFilename).pathExtension
+        let safeOverride = override.filesystemSafeFilename
+        let base = (safeOverride as NSString).deletingPathExtension.nilIfBlank ?? safeOverride
+        guard includeExtension else { return base }
+        return base.hasSuffix(".\(extensionValue)") ? base : "\(base).\(extensionValue)"
+    }
+
     static func render(pattern: String, item: ImportItem, workflowName: String, includeExtension: Bool = true) -> String {
         let calendar = Calendar.current
         let date = item.recordingDate

@@ -522,6 +522,10 @@ struct ImportItem: Codable, Identifiable, Equatable {
     var exportedMarkdownPath: String?
     var error: ProcessingError?
     var fileOperations: [FileOperationRecord] = []
+    /// Set once the user edits the filename directly during review. When present,
+    /// this replaces the workflow's generated filename outright instead of feeding
+    /// into the pattern.
+    var filenameOverride: String?
 
 
     var displayTitle: String {
@@ -590,6 +594,7 @@ extension ImportItem {
             exportedMarkdownPath = try container.decodeIfPresent(String.self, forKey: .exportedMarkdownPath)
             error = try container.decodeIfPresent(ProcessingError.self, forKey: .error)
             fileOperations = try container.decodeIfPresent([FileOperationRecord].self, forKey: .fileOperations) ?? []
+            filenameOverride = try container.decodeIfPresent(String.self, forKey: .filenameOverride)
         }
 }
 

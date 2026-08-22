@@ -9,6 +9,7 @@ struct ImportDetailView: View {
     @State private var titleDraft = ""
     @State private var summaryDraft = ""
     @State private var transcriptDraft = ""
+    @State private var filenameDraft = ""
     /// Whether the user has actually typed into each field since it was last reset.
     /// Bindings read live item data straight from the store until this flips, which
     /// means there's no transition to catch: a coalesced run of background status
@@ -18,6 +19,7 @@ struct ImportDetailView: View {
     @State private var hasEditedTitle = false
     @State private var hasEditedSummary = false
     @State private var hasEditedTranscript = false
+    @State private var hasEditedFilename = false
     /// The date is read from the file, so it reads as a fact until the pencil says
     /// otherwise. Unlocking is per recording, never carried to the next one.
     @State private var isEditingRecordingDate = false
@@ -107,9 +109,11 @@ struct ImportDetailView: View {
         titleDraft = ""
         summaryDraft = ""
         transcriptDraft = ""
+        filenameDraft = ""
         hasEditedTitle = false
         hasEditedSummary = false
         hasEditedTranscript = false
+        hasEditedFilename = false
     }
 
     /// What the field shows: the live item value until the user actually types
@@ -137,6 +141,14 @@ struct ImportDetailView: View {
 
     private var transcriptBinding: Binding<String> {
         Binding(get: { effectiveTranscript }, set: { transcriptDraft = $0; hasEditedTranscript = true })
+    }
+
+    private var effectiveFilename: String {
+        hasEditedFilename ? filenameDraft : generatedFilename
+    }
+
+    private var filenameBinding: Binding<String> {
+        Binding(get: { effectiveFilename }, set: { filenameDraft = $0; hasEditedFilename = true })
     }
 
     /// Saves edited title/summary/transcript back to the store. Called on tab switch,
@@ -169,6 +181,10 @@ struct ImportDetailView: View {
             updated.transcript = transcriptDraft
             changed = true
         }
+        if hasEditedFilename {
+            updated.filenameOverride = filenameDraft.nilIfBlank
+            changed = true
+        }
 
         if changed {
             store.update(updated)
@@ -199,11 +215,18 @@ struct ImportDetailView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
-                Text(generatedFilename)
-                    .font(.subheadline.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                if isEditable {
+                    TextField("Filename", text: filenameBinding)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.subheadline.monospaced())
+                        .foregroundStyle(.primary)
+                } else {
+                    Text(generatedFilename)
+                        .font(.subheadline.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
 
             Spacer()
@@ -559,8 +582,8 @@ struct ImportDetailView: View {
 
     private var generatedFilename: String {
         let policy = store.workflowPolicy(for: item.workflow)
-        guard item.analysis != nil else { return "Filename pending" }
-        return FilenamePattern.render(pattern: policy.filenamePattern, item: item, workflowName: policy.name)
+        guard item.analysis != nil || item.filenameOverride?.nilIfBlank != nil else { return "Filename pending" }
+        return FilenamePattern.resolve(pattern: policy.filenamePattern, item: item, workflowName: policy.name)
     }
 
     private var markdownNoteTitle: String {

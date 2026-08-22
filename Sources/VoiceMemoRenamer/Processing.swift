@@ -884,7 +884,7 @@ struct ObsidianJournalExporter {
     func export(_ item: ImportItem) async throws -> ImportItem {
         let policy = settings.policy(for: item.workflow)
         let vaultRoot = URL(fileURLWithPath: settings.vaultRootPath)
-        let generatedFilename = FilenamePattern.render(pattern: policy.filenamePattern, item: item, workflowName: policy.name)
+        let generatedFilename = FilenamePattern.resolve(pattern: policy.filenamePattern, item: item, workflowName: policy.name)
         var updated = item
         var exportedAudioURL: URL?
 
@@ -1081,7 +1081,7 @@ struct ObsidianJournalExporter {
         case .createMarkdownFile, .saveTranscriptOnly:
             let directory = transcriptDestinationDirectory(for: policy, vaultRoot: vaultRoot, item: item)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let base = FilenamePattern.render(pattern: policy.filenamePattern, item: item, workflowName: policy.name, includeExtension: false)
+            let base = FilenamePattern.resolve(pattern: policy.filenamePattern, item: item, workflowName: policy.name, includeExtension: false)
             let markdownURL = uniqueURL(in: directory, filename: "\(base).md")
             try Data(markdownDocument(for: item, policy: policy, audioReference: audioReference).utf8).write(to: markdownURL, options: [.atomic])
             return markdownURL

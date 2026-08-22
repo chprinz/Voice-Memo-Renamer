@@ -1071,8 +1071,8 @@ struct QueueRow: View {
                 return (path as NSString).lastPathComponent
             }
         }
-        guard item.analysis != nil else { return "Filename pending" }
-        return FilenamePattern.render(pattern: policy.filenamePattern, item: item, workflowName: policy.name)
+        guard item.analysis != nil || item.filenameOverride?.nilIfBlank != nil else { return "Filename pending" }
+        return FilenamePattern.resolve(pattern: policy.filenamePattern, item: item, workflowName: policy.name)
     }
 
     private var subtitle: String {
